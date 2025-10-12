@@ -10,7 +10,14 @@ import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
+import javafx.stage.FileChooser;
+import javafx.stage.Window;
 import javafx.util.Duration;
+
+import java.awt.Desktop;
+import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 
 import client.controller.MidController;
 
@@ -63,6 +70,10 @@ public class UIMessageHandler {
         MenuItem miDelete = new MenuItem("Xóa");
         miDelete.getStyleClass().add("msg-context-item-danger");
         cm.getItems().addAll(miEdit, miDelete);
+        MenuItem miDownload = new MenuItem("Tải xuống…");
+        miDownload.getStyleClass().add("msg-context-item");
+        cm.getItems().add(new SeparatorMenuItem());
+        cm.getItems().add(miDownload);
 
         Node bubble = null;
         if (incoming) {
@@ -72,7 +83,6 @@ public class UIMessageHandler {
         }
         String bubbleId = (bubble instanceof Region r) ? r.getId() : null;
 
-        // chỉ cho Edit với bubble text gửi đi
         final Label labelRef = findTextLabelInRow(row, incoming);
         final boolean canEdit = (labelRef != null) && "outgoing-text".equals(
                 (row.getChildren().isEmpty() ? null
@@ -116,11 +126,9 @@ public class UIMessageHandler {
         });
 
         miDelete.setOnAction(e -> {
-            // 1) Lấy MID nếu đã có sẵn
             Object ud = (messageId != null) ? messageId : row.getUserData();
             String midStr = (ud == null) ? null : String.valueOf(ud);
 
-            // 2) Nếu chưa là số -> thử resolve qua fid -> mid
             boolean numeric = false;
             if (midStr != null) {
                 try { Long.parseLong(midStr); numeric = true; } catch (Exception ignore) {}
@@ -135,18 +143,16 @@ public class UIMessageHandler {
                     }
                 }
                 if (numeric) {
-                    row.setUserData(midStr); // cache lại để lần sau khỏi resolve
+                    row.setUserData(midStr);
                 }
             }
 
-            // 3) Nếu vẫn chưa có MID thì báo người dùng, không bắn lệnh rỗng
             if (!numeric) {
                 System.out.println("[MENU] DELETE blocked: missing numeric messageId (waiting for FILE_META to map fid->mid)");
                 controller.showErrorAlert("Tin nhắn vừa gửi chưa đồng bộ ID. Hãy thử lại sau một lát.");
                 return;
             }
 
-            // 4) Gửi lệnh xóa
             try {
                 long id = Long.parseLong(midStr);
                 System.out.println("[MENU] DELETE send id=" + id);
@@ -156,6 +162,88 @@ public class UIMessageHandler {
                 controller.getMessageContainer().getChildren().remove(row);
             } catch (Exception ex) {
                 System.out.println("[MENU] DELETE failed ex=" + ex);
+            }
+        });
+
+        miDownload.setOnAction(e -> {
+            System.out.println("[DLSAVE] click Tải xuống…");
+            try {
+                Object fidObj = row.getProperties().get("fid");
+                String fid = (fidObj == null) ? null : String.valueOf(fidObj);
+
+                String midStr = null;
+                Object ud = row.getUserData();
+                if (ud != null && isNumeric(String.valueOf(ud))) {
+                    midStr = String.valueOf(ud);
+                } else if (fid != null) {
+                    String mapped = controller.getFileIdToMsgId().get(fid);
+                    if (isNumeric(mapped)) midStr = mapped;
+                }
+
+                String suggestedName = null;
+                if (fid != null) suggestedName = controller.getFileIdToName().get(fid);
+                if (suggestedName == null || suggestedName.isBlank()) suggestedName = "download";
+
+                FileChooser fc = new FileChooser();
+                String suggested = suggestedName;
+                if (!suggested.contains(".")) {
+                    String ext = UtilHandler.guessExt(
+                            (fid != null ? controller.getFileIdToMime().get(fid) : null),
+                            suggestedName
+                    );
+                    if (ext != null && !ext.isBlank()) suggested += ext;
+                }
+                fc.setInitialFileName(suggested);
+                Window owner = (controller.getMessageContainer()!=null && controller.getMessageContainer().getScene()!=null)
+                        ? controller.getMessageContainer().getScene().getWindow() : null;
+                File dest = fc.showSaveDialog(owner);
+                if (dest == null) {
+                    System.out.println("[DLSAVE] user canceled save dialog");
+                    return;
+                }
+                System.out.println("[DLSAVE] user choose dest=" + dest.getAbsolutePath());
+
+                if (fid == null) {
+                    fid = (midStr != null) ? ("MID_" + midStr) : null;
+                    if (fid != null) row.getProperties().put("fid", fid);
+                }
+                if (fid == null) {
+                    controller.showErrorAlert("Không xác định được tệp để tải xuống.");
+                    return;
+                }
+
+                BufferedOutputStream existedBos = controller.getDlOut().get(fid);
+                File existedPath = controller.getDlPath().get(fid);
+
+                if (existedBos != null && existedPath != null) {
+                    row.getProperties().put("moveToChosen", dest);
+                    row.getProperties().put("saveToChosen", Boolean.TRUE);
+                    System.out.println("[DLSAVE] mark move after done. temp=" + existedPath.getAbsolutePath()
+                            + " -> chosen=" + dest.getAbsolutePath());
+                } else {
+                    BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(dest));
+                    controller.getDlOut().put(fid, bos);
+                    controller.getDlPath().put(fid, dest);
+                    row.getProperties().put("saveToChosen", Boolean.TRUE);
+                }
+
+                if (controller.getConnection()!=null && controller.getConnection().isAlive()) {
+                    if (midStr != null && isNumeric(midStr)) {
+                        System.out.println("[DLSAVE] request download by messageId=" + midStr);
+                        controller.getConnection().downloadFileByMsgId(Long.parseLong(midStr));
+                    } else if (isNumeric(fid)) {
+                        System.out.println("[DLSAVE] request download by fileId=" + fid);
+                        controller.getConnection().downloadFileByFileId(Long.parseLong(fid));
+                    } else {
+                        System.out.println("[DLSAVE] request download legacy by fid=" + fid);
+                        controller.getConnection().downloadFileLegacy(fid);
+                    }
+                } else {
+                    controller.showErrorAlert("Không có kết nối tới máy chủ.");
+                }
+            } catch (Exception ex) {
+                System.out.println("[DLSAVE] failed ex=" + ex);
+                controller.showErrorAlert("Tải xuống thất bại: " + ex.getMessage());
             }
         });
 
@@ -174,7 +262,6 @@ public class UIMessageHandler {
             }
             System.out.println("[MENU] onShowing userData=" + ud + " hasNumeric=" + hasNumeric);
 
-            // Thử resolve nhanh lần nữa nếu chưa numeric
             if (!hasNumeric) {
                 Object fid = row.getProperties().get("fid");
                 System.out.println("[MENU] onShowing tryResolve from fid=" + fid);
@@ -198,6 +285,18 @@ public class UIMessageHandler {
             boolean enableDelete = isOutgoing && (hasNumeric || hasFid);
             miDelete.setDisable(!enableDelete);
             System.out.println("[MENU] onShowing enableDelete=" + enableDelete);
+            boolean isFileLike = false;
+            if (bid != null) {
+                isFileLike = bid.endsWith("-file") || bid.endsWith("-image")
+                        || bid.endsWith("-video") || bid.endsWith("-voice");
+            }
+            miDownload.setDisable(!isFileLike);
+
+            Object fidObj2 = row.getProperties().get("fid");
+            System.out.println("[DLSAVE] onShowing bubbleId=" + bid
+                    + " isFileLike=" + isFileLike
+                    + " fid=" + (fidObj2==null?null:String.valueOf(fidObj2)));
+
             menuBtn.setOpacity(1.0);
         });
 
@@ -240,6 +339,27 @@ public class UIMessageHandler {
             });
         }
     }
+    
+    private static boolean isNumeric(String s){
+        if (s == null) return false;
+        try { Long.parseLong(s); return true; } catch (Exception ignore){ return false; }
+    }
+
+    private void openContainingFolder(File file){
+        if (file == null) return;
+        try {
+            File dir = file.getParentFile();
+            if (dir == null) dir = file;
+            System.out.println("[DLSAVE] open folder=" + dir.getAbsolutePath());
+            if (Desktop.isDesktopSupported()) {
+                Desktop.getDesktop().open(dir);
+            }
+        } catch (Exception ex){
+            System.out.println("[DLSAVE] open folder failed ex=" + ex);
+            controller.showErrorAlert("Không mở được thư mục: " + ex.getMessage());
+        }
+    }
+
 
     private HBox addRowWithBubble(Node bubble, boolean incoming, String messageId) {
         if (controller.getMessageContainer().getChildren().size() > 100) {

@@ -400,6 +400,33 @@ public class MessageHandler {
                         }
                     }
                 }
+                
+                try {
+                    if (msgIdStr != null && !msgIdStr.isBlank()) {
+                        String midKey = "MID_" + msgIdStr;
+
+                        // Nếu UI đã mở stream theo midKey (do user chọn vị trí lưu trước khi biết fid)
+                        BufferedOutputStream bosOld = controller.getDlOut().remove(midKey);
+                        File destOld = controller.getDlPath().remove(midKey);
+
+                        if (bosOld != null && destOld != null) {
+                            // Gắn về key thật = fid
+                            controller.getDlOut().put(fid, bosOld);
+                            controller.getDlPath().put(fid, destOld);
+                            System.out.println("[DLSAVE] REBIND stream from " + midKey + " -> " + fid + " dest=" + destOld.getAbsolutePath());
+
+                            // Nếu row lịch sử/bubble nào còn đang gắn fid=midKey thì đổi sang fid thật
+                            HBox rByMidKey = controller.findRowByFid(midKey);
+                            if (rByMidKey != null) {
+                                rByMidKey.getProperties().put("fid", fid);
+                                // Cờ 'saveToChosen' vẫn giữ nguyên trên row
+                                System.out.println("[DLSAVE] REBIND row fid property from " + midKey + " -> " + fid);
+                            }
+                        }
+                    }
+                } catch (Exception rebindEx) {
+                    System.out.println("[DLSAVE] REBIND failed ex=" + rebindEx);
+                }
 
                 // Lưu size/mime/name để các UI refresher dùng
                 if (sizeHint > 0) controller.getFileIdToSize().put(fid, sizeHint);
@@ -409,13 +436,22 @@ public class MessageHandler {
 
                 // Chuẩn bị file tạm để nhận CHUNK
                 try {
-                    String ext = UtilHandler.guessExt(mime, controller.getFileIdToName().get(fid));
-                    File tmp = File.createTempFile("im_", "_" + fid + (ext == null ? "" : ext));
-                    BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(tmp));
-                    controller.getDlPath().put(fid, tmp);
-                    controller.getDlOut().put(fid, bos);
+                    BufferedOutputStream existed = controller.getDlOut().get(fid);
+                    File existedFile = controller.getDlPath().get(fid);
+
+                    if (existed != null && existedFile != null) {
+                        System.out.println("[DLSAVE] FILE_META reuse existing dest=" + existedFile.getAbsolutePath());
+                        // Không làm gì: đã có stream/file đích
+                    } else {
+                        String ext = UtilHandler.guessExt(mime, controller.getFileIdToName().get(fid));
+                        File tmp = File.createTempFile("im_", "_" + fid + (ext == null ? "" : ext));
+                        BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(tmp));
+                        controller.getDlPath().put(fid, tmp);
+                        controller.getDlOut().put(fid, bos);
+                        System.out.println("[DLSAVE] FILE_META create temp=" + tmp.getAbsolutePath());
+                    }
                 } catch (Exception ex) {
-                    // không chặn luồng nếu tạo file tạm lỗi
+                    System.out.println("[DLSAVE] FILE_META prepare dest failed ex=" + ex);
                 }
 
                 // Cập nhật lại UI: file thường/ảnh/video
@@ -466,6 +502,22 @@ public class MessageHandler {
                                         default -> controller.getMediaHandler().updateGenericFileMetaByFid(fid);
                                     }
                                 } catch (Exception ex) {}
+                                try {
+                                    boolean shouldOpen = false;
+                                    if (row != null) {
+                                        Object flag = row.getProperties().get("saveToChosen");
+                                        shouldOpen = (flag instanceof Boolean b && b);
+                                        if (shouldOpen) row.getProperties().remove("saveToChosen");
+                                    }
+                                    if (shouldOpen) {
+                                        System.out.println("[DLSAVE] open folder after done: " + file.getAbsolutePath());
+                                        try {
+                                            java.awt.Desktop.getDesktop().open(file.getParentFile());
+                                        } catch (Exception ex2) {
+                                            System.out.println("[DLSAVE] open folder failed ex=" + ex2);
+                                        }
+                                    }
+                                } catch (Exception ignore) {}
                             });
                         }
                     }
