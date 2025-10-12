@@ -10,6 +10,18 @@ public class FileDao {
     public FileDao(Connection conn) {
         this.conn = conn;
     }
+    
+    public List<FileRecord> listByMessageId(long messageId) throws SQLException {
+        String sql = "SELECT * FROM files WHERE message_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, messageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<FileRecord> list = new ArrayList<>();
+                while (rs.next()) list.add(mapRow(rs));
+                return list;
+            }
+        }
+    }
 
     /** Lưu metadata cho mọi loại file (image/video/audio/other) */
     public long save(long messageId, String fileName, String filePath,

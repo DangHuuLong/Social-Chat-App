@@ -32,8 +32,10 @@ public class UIMessageHandler {
         if (m.matches("(?i)\\d+(?:\\.\\d+)?(B|KB|MB|GB|TB)")) return m;
         return "";
     }
-
+    
     private void attachSideMenu(HBox row, Region spacer, boolean incoming, String messageId) {
+        System.out.println("[MENU] attachSideMenu incoming=" + incoming + " paramMsgId=" + messageId);
+
         HBox spacerBox = new HBox();
         HBox.setHgrow(spacerBox, Priority.ALWAYS);
         Region filler = new Region();
@@ -70,14 +72,13 @@ public class UIMessageHandler {
         }
         String bubbleId = (bubble instanceof Region r) ? r.getId() : null;
 
-        boolean editable = "outgoing-text".equals(bubbleId);
-        miEdit.setDisable(!editable);
-
+        // chỉ cho Edit với bubble text gửi đi
         final Label labelRef = findTextLabelInRow(row, incoming);
         final boolean canEdit = (labelRef != null) && "outgoing-text".equals(
                 (row.getChildren().isEmpty() ? null
-                 : ((Region)(incoming ? row.getChildren().get(0) : row.getChildren().get(row.getChildren().size()-1)))).getId());
+                        : ((Region)(incoming ? row.getChildren().get(0) : row.getChildren().get(row.getChildren().size()-1)))).getId());
         miEdit.setDisable(!canEdit);
+
         miEdit.setOnAction(e -> {
             if (!canEdit) return;
             final Object msgId = (messageId != null) ? messageId : row.getUserData();
@@ -98,44 +99,134 @@ public class UIMessageHandler {
                 try {
                     long id = Long.parseLong(String.valueOf(msgId));
                     if (controller.getConnection() != null && controller.getConnection().isAlive()) {
+                        System.out.println("[MENU] EDIT send id=" + id);
                         controller.getConnection().editMessage(
                             id,
                             controller.getCurrentUser().getUsername(),
                             controller.getSelectedUser().getUsername(),
                             trimmed
                         );
+                    } else {
+                        System.out.println("[MENU] EDIT skipped, no connection");
                     }
                 } catch (Exception ex) {
-                    System.err.println("[EDIT] send failed: " + ex.getMessage());
+                    System.out.println("[MENU] EDIT failed ex=" + ex);
                 }
             });
         });
 
         miDelete.setOnAction(e -> {
-            controller.getMessageContainer().getChildren().remove(row);
+            // 1) Lấy MID nếu đã có sẵn
             Object ud = (messageId != null) ? messageId : row.getUserData();
-            if (ud != null && controller.getConnection() != null) {
-                try {
-                    long id = Long.parseLong(String.valueOf(ud));
+            String midStr = (ud == null) ? null : String.valueOf(ud);
+
+            // 2) Nếu chưa là số -> thử resolve qua fid -> mid
+            boolean numeric = false;
+            if (midStr != null) {
+                try { Long.parseLong(midStr); numeric = true; } catch (Exception ignore) {}
+            }
+            if (!numeric) {
+                Object fidObj = row.getProperties().get("fid");
+                String fid = (fidObj == null) ? null : String.valueOf(fidObj);
+                if (fid != null) {
+                    String mapped = controller.getFileIdToMsgId().get(fid);
+                    if (mapped != null && !mapped.isBlank()) {
+                        try { Long.parseLong(mapped); numeric = true; midStr = mapped; } catch (Exception ignore) {}
+                    }
+                }
+                if (numeric) {
+                    row.setUserData(midStr); // cache lại để lần sau khỏi resolve
+                }
+            }
+
+            // 3) Nếu vẫn chưa có MID thì báo người dùng, không bắn lệnh rỗng
+            if (!numeric) {
+                System.out.println("[MENU] DELETE blocked: missing numeric messageId (waiting for FILE_META to map fid->mid)");
+                controller.showErrorAlert("Tin nhắn vừa gửi chưa đồng bộ ID. Hãy thử lại sau một lát.");
+                return;
+            }
+
+            // 4) Gửi lệnh xóa
+            try {
+                long id = Long.parseLong(midStr);
+                System.out.println("[MENU] DELETE send id=" + id);
+                if (controller.getConnection() != null && controller.getConnection().isAlive()) {
                     controller.getConnection().deleteMessage(id);
-                } catch (Exception ignore) { }
+                }
+                controller.getMessageContainer().getChildren().remove(row);
+            } catch (Exception ex) {
+                System.out.println("[MENU] DELETE failed ex=" + ex);
             }
         });
 
-        menuBtn.setOnAction(e -> cm.show(menuBtn, Side.BOTTOM, 0, 0));
-        cm.setOnShowing(e -> menuBtn.setOpacity(1.0));
-        cm.setOnHiding(e -> fadeOut.playFromStart());
+        cm.setOnShowing(e -> {
+            Node b = null;
+            if (incoming) { if (!row.getChildren().isEmpty()) b = row.getChildren().get(0); }
+            else { if (!row.getChildren().isEmpty()) b = row.getChildren().get(row.getChildren().size() - 1); }
+            String bid = (b instanceof Region r) ? r.getId() : null;
+            boolean isOutgoing = bid != null && bid.startsWith("outgoing-");
+            System.out.println("[MENU] onShowing bubbleId=" + bid + " isOutgoing=" + isOutgoing);
 
-        row.setOnMouseEntered(e -> fadeIn.playFromStart());
-        row.setOnMouseExited(e -> { if (!cm.isShowing()) fadeOut.playFromStart(); });
+            Object ud = row.getUserData();
+            boolean hasNumeric = false;
+            if (ud != null) {
+                try { Long.parseLong(String.valueOf(ud)); hasNumeric = true; } catch (Exception ignore2) {}
+            }
+            System.out.println("[MENU] onShowing userData=" + ud + " hasNumeric=" + hasNumeric);
+
+            // Thử resolve nhanh lần nữa nếu chưa numeric
+            if (!hasNumeric) {
+                Object fid = row.getProperties().get("fid");
+                System.out.println("[MENU] onShowing tryResolve from fid=" + fid);
+                if (fid != null) {
+                    String mid = controller.getFileIdToMsgId().get(String.valueOf(fid));
+                    System.out.println("[MENU] onShowing map(fid->mid)=" + mid);
+                    if (mid != null && !mid.isBlank()) {
+                        try {
+                            Long.parseLong(mid);
+                            row.setUserData(mid);
+                            hasNumeric = true;
+                            System.out.println("[MENU] onShowing resolved mid set userData=" + mid);
+                        } catch (Exception ignore3) {
+                            System.out.println("[MENU] onShowing mid not numeric=" + mid);
+                        }
+                    }
+                }
+            }
+
+            boolean hasFid = (row.getProperties().get("fid") != null);
+            boolean enableDelete = isOutgoing && (hasNumeric || hasFid);
+            miDelete.setDisable(!enableDelete);
+            System.out.println("[MENU] onShowing enableDelete=" + enableDelete);
+            menuBtn.setOpacity(1.0);
+        });
+
+        menuBtn.setOnAction(e -> {
+            System.out.println("[MENU] open clicked");
+            cm.show(menuBtn, Side.BOTTOM, 0, 0);
+        });
+        cm.setOnHiding(e -> {
+            System.out.println("[MENU] menu hiding");
+            fadeOut.playFromStart();
+        });
+
+        row.setOnMouseEntered(e -> {
+            fadeIn.playFromStart();
+        });
+        row.setOnMouseExited(e -> {
+            if (!cm.isShowing()) fadeOut.playFromStart();
+        });
 
         if (incoming) spacerBox.getChildren().addAll(holder, filler);
-        else          spacerBox.getChildren().addAll(filler, holder);
+        else spacerBox.getChildren().addAll(filler, holder);
 
         int idx = row.getChildren().indexOf(spacer);
         if (idx >= 0) row.getChildren().set(idx, spacerBox);
 
-        if (messageId != null) row.setUserData(messageId);
+        if (messageId != null) {
+            row.setUserData(messageId);
+            System.out.println("[MENU] preset userData from param=" + messageId);
+        }
     }
 
     private void scrollToBottom() {
@@ -198,6 +289,7 @@ public class UIMessageHandler {
 
     /* FILE: chỉ tên + kích thước (lọc MIME) */
     public HBox addFileMessage(String filename, String meta, boolean incoming, String messageId) {
+        // Tạo bubble
         VBox box = new VBox();
         box.setId(incoming ? "incoming-file" : "outgoing-file");
         box.setPadding(new Insets(8, 12, 8, 12));
@@ -212,15 +304,15 @@ public class UIMessageHandler {
         nameLbl.setId("fileNamePrimary");
         nameLbl.getStyleClass().add("file-name");
 
-        // --- LẤY CHỈ SIZE ---
+        // --- TÍNH SIZE CHỈ KHI messageId LÀ fid (UUID), KHÔNG PHẢI MID SỐ ---
         String sizeOnly = normalizeSizeOnly(meta);
+        boolean messageIdIsNumeric = false;
+        try { if (messageId != null) Long.parseLong(messageId); messageIdIsNumeric = true; } catch (Exception ignore) {}
 
-        // Nếu meta trống, thử lấy size từ dlPath theo fileId (messageId)
-        if ((sizeOnly == null || sizeOnly.isBlank()) && messageId != null) {
+        if ((sizeOnly == null || sizeOnly.isBlank()) && messageId != null && !messageIdIsNumeric) {
+            // dlPath key theo fid (UUID) trong giai đoạn mới gửi
             var f = controller.getDlPath().get(messageId);
-            if (f != null && f.exists()) {
-                sizeOnly = UtilHandler.humanBytes(f.length());
-            }
+            if (f != null && f.exists()) sizeOnly = UtilHandler.humanBytes(f.length());
         }
 
         Label metaLbl = new Label(sizeOnly == null ? "" : sizeOnly);
@@ -237,17 +329,31 @@ public class UIMessageHandler {
         content.getChildren().addAll(icon, info, innerSpacer);
         box.getChildren().add(content);
 
-        // Tạo row & gán userData = messageId để về sau cập nhật size
+        // Thêm bubble vào hàng và gắn side menu
         HBox row = addRowWithBubble(box, incoming, messageId);
 
-        // Nếu vẫn chưa có size (file chưa có trên đĩa), cập nhật hậu kỳ khi có dữ liệu
-        if ((sizeOnly == null || sizeOnly.isBlank()) && messageId != null && controller.getMediaHandler() != null) {
+        // Gắn userData/fid để còn resolve về sau
+        if (messageId != null) {
+            row.setUserData(messageId);
+            boolean numeric = false;
+            try { Long.parseLong(messageId); numeric = true; } catch (Exception ignore) {}
+            if (!numeric) {
+                // messageId lúc mới gửi là fid (UUID)
+                row.getProperties().put("fid", messageId);
+                if (!incoming) controller.getOutgoingFileBubbles().put(messageId, row);
+            }
+        }
+
+        // Chỉ gọi update meta theo **fid** (UUID) khi chưa có size và messageId là **fid**
+        if ((sizeOnly == null || sizeOnly.isBlank())
+                && messageId != null
+                && !messageIdIsNumeric
+                && controller.getMediaHandler() != null) {
             Platform.runLater(() -> controller.getMediaHandler().updateGenericFileMetaByFid(messageId));
         }
 
         return row;
     }
-
 
     public HBox addTextMessage(String text, boolean incoming) { return addTextMessage(text, incoming, (String) null); }
     public HBox addImageMessage(Image img, String caption, boolean incoming) { return addImageMessage(img, caption, incoming, (String) null); }
@@ -260,7 +366,7 @@ public class UIMessageHandler {
         HBox row = new HBox(6);
         row.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
         row.setUserData(fileId);
-
+        if (fileId != null) row.getProperties().put("fid", fileId);
         HBox voiceBox = new HBox(10);
         voiceBox.setId(incoming ? "incoming-voice" : "outgoing-voice");
         voiceBox.setAlignment(Pos.CENTER_LEFT);
@@ -301,7 +407,7 @@ public class UIMessageHandler {
         HBox row = new HBox(6);
         row.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
         row.setUserData(fileId);
-
+        if (fileId != null) row.getProperties().put("fid", fileId);
         VBox box = new VBox(6);
         box.setId(incoming ? "incoming-video" : "outgoing-video");
         box.setAlignment(Pos.CENTER_LEFT);

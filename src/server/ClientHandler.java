@@ -250,7 +250,7 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // --- CHUNK (FILE_CHUNK / AUDIO_CHUNK) ---
+         // --- CHUNK (FILE_CHUNK / AUDIO_CHUNK) ---
             if (f.type == MessageType.FILE_CHUNK || f.type == MessageType.AUDIO_CHUNK) {
                 if (upOut == null || upFileId == null) throw new IOException("CHUNK without META");
                 if (!upFileId.equals(f.transferId)) throw new IOException("Mismatched fileId");
@@ -264,19 +264,15 @@ public class ClientHandler implements Runnable {
                 if (f.last) {
                     upOut.flush(); upOut.close(); upOut = null;
 
-                    // ack về client gửi
-                    Frame ack = Frame.ack("FILE_SAVED " + upWritten + "B " + upMime);
-                    ack.transferId = upFileId;
-                    sendFrame(ack);
-
                     long msgId = 0L;
                     long fileId = 0L;
 
                     try {
-                        // tạo 1 message text đại diện file
+                        // 1) Tạo message text đại diện file và lấy messageId
                         Frame fileMsg = new Frame(MessageType.DM, username, upToUser, "[FILE] " + upOrigName);
                         msgId = messageDao.saveSentReturnId(fileMsg);
 
+                        // 2) Lưu metadata file và lấy fileId
                         String filePath = new File(UPLOAD_DIR, sanitizeFilename(upFileId)).getAbsolutePath();
                         fileId = fileDao.save(msgId, upOrigName, filePath, upMime, upWritten);
 
@@ -286,7 +282,22 @@ public class ClientHandler implements Runnable {
                         System.err.println("[DB] Failed to save file metadata: " + sqle.getMessage());
                     }
 
-                    // push sự kiện tới người nhận
+                    // 3) Gửi ACK cho client GỬI, có kèm messageId + fileId
+                    //    - giữ nguyên transferId = uuid để client cũ không vỡ
+                    //    - body dạng JSON dễ parse trên client
+                    String ackJson = "{"
+                            + "\"status\":\"FILE_SAVED\","
+                            + "\"messageId\":" + msgId + ","
+                            + "\"fileId\":" + fileId + ","
+                            + "\"bytes\":" + upWritten + ","
+                            + "\"mime\":\"" + escJson(upMime) + "\""
+                            + "}";
+
+                    Frame ack = Frame.ack(ackJson);
+                    ack.transferId = upFileId; // uuid bên client
+                    sendFrame(ack);
+
+                    // 4) Push sự kiện cho người nhận (giữ nguyên như cũ)
                     if (upToUser != null && !upToUser.isBlank()) {
                         ClientHandler target = online.get(upToUser);
                         if (target != null) {
@@ -307,12 +318,13 @@ public class ClientHandler implements Runnable {
                         }
                     }
 
-                    // reset state
+                    // 5) Reset state
                     upFileId = null; upToUser = null; upOrigName = null; upMime = null;
                     upDeclaredSize = 0; upExpectedSeq = 0; upWritten = 0;
                 }
                 return;
             }
+
 
         } catch (IOException e) {
             try { if (upOut != null) upOut.close(); } catch (Exception ignore) {}

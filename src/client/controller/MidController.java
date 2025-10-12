@@ -97,7 +97,9 @@ public class MidController implements CallSignalListener {
     
     MediaHandler mediaHandler = new MediaHandler(this);
     private final Map<String, Long> fileIdToSize = new ConcurrentHashMap<>();
-
+    private final java.util.Map<String,String> fileIdToMsgId = new java.util.concurrent.ConcurrentHashMap<>();
+    
+    public java.util.Map<String,String> getFileIdToMsgId() { return fileIdToMsgId; }
     public Map<String, Long> getFileIdToSize() { return fileIdToSize; }
     
 	public MediaHandler getMediaHandler() {
@@ -125,6 +127,30 @@ public class MidController implements CallSignalListener {
                 f -> Platform.runLater(() -> handleServerFrame(f)),
                 err -> System.err.println("[NET] Disconnected: " + err)
             );
+        }
+    }
+    
+    public void onOutgoingFileSaved(String fid, long messageId, long fileId) {
+        if (fid == null || fid.isBlank()) return;
+
+        // Lưu map fid -> messageId để nơi khác có thể tra cứu
+        if (messageId > 0) {
+            fileIdToMsgId.put(fid, String.valueOf(messageId));
+        }
+
+        // Nếu có giữ kích thước tạm theo fid, bạn có thể chuyển sang key khác (không bắt buộc)
+        // ví dụ: if (fileId > 0 && fileIdToSize.containsKey(fid)) {
+        //     fileIdToSize.put(String.valueOf(fileId), fileIdToSize.remove(fid));
+        // }
+
+        // Tìm bubble của file vừa gửi (đã lưu ở outgoingFileBubbles lúc showOutgoingFile)
+        HBox row = outgoingFileBubbles.remove(fid);
+        if (row != null) {
+            // Gắn lại fid lên properties (để code khác còn truy vết nếu cần)
+            row.getProperties().put("fid", fid);
+
+            // QUAN TRỌNG: gắn messageId (numeric) vào userData -> menu Delete dùng được ngay
+            row.setUserData(String.valueOf(messageId));
         }
     }
 
@@ -292,10 +318,54 @@ public class MidController implements CallSignalListener {
     public void enqueuePendingOutgoing(HBox row) {
         if (row != null) pendingOutgoingTexts.addLast(row);
     }
-    public void tagNextPendingOutgoing(String id) {
-        HBox row = pendingOutgoingTexts.pollFirst();
-        if (row != null && id != null) row.setUserData(id);
+
+    public HBox findRowByFid(String fid) {
+        if (fid == null || fid.isBlank()) return null;
+        var mc = getMessageContainer();
+        if (mc == null) return null;
+        for (var n : mc.getChildren()) {
+            if (n instanceof HBox row) {
+                Object p = row.getProperties().get("fid");
+                if (p != null && fid.equals(String.valueOf(p))) return row;
+            }
+        }
+        return null;
     }
+    public void tagNextPendingOutgoing(String dbIdStr) {
+        if (dbIdStr == null || dbIdStr.isBlank()) return;
+        try { Long.parseLong(dbIdStr); } catch (Exception e) { return; }
+        var mc = getMessageContainer();
+        if (mc != null && !mc.getChildren().isEmpty()) {
+            for (int i = mc.getChildren().size() - 1; i >= 0; i--) {
+                var n = mc.getChildren().get(i);
+                if (n instanceof HBox row) {
+                    Object ud = row.getUserData();
+                    boolean numeric = false;
+                    if (ud != null) { try { Long.parseLong(String.valueOf(ud)); numeric = true; } catch (Exception ignore) {} }
+                    if (!numeric) { row.setUserData(dbIdStr); break; }
+                }
+            }
+        }
+        if (getOutgoingFileBubbles() != null && !getOutgoingFileBubbles().isEmpty()) {
+            var it = getOutgoingFileBubbles().entrySet().iterator();
+            while (it.hasNext()) {
+                var e = it.next();
+                HBox row = e.getValue();
+                Object ud = row.getUserData();
+                boolean numeric = false;
+                if (ud != null) { try { Long.parseLong(String.valueOf(ud)); numeric = true; } catch (Exception ignore) {} }
+                if (!numeric) {
+                    row.getProperties().put("fid", String.valueOf(e.getKey()));
+                    row.setUserData(dbIdStr);
+                    it.remove();
+                    break;
+                }
+            }
+        }
+    }
+
+
+
 
     public HBox addTextMessage(String text, boolean incoming) {
         HBox row = addTextMessage(text, incoming, null);

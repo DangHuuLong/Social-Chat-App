@@ -27,6 +27,9 @@ public class ClientConnection {
     private Consumer<Exception> onError;
     private final ConcurrentHashMap<String, CompletableFuture<Frame>> pendingAcks = new ConcurrentHashMap<>();
     private MidController midController;
+    private final ConcurrentHashMap<String, Long> fidToMsgId  = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> fidToFileId = new ConcurrentHashMap<>();
+
 
     public boolean connect(String host, int port) {
         try {
@@ -75,35 +78,56 @@ public class ClientConnection {
                     Frame f = FrameIO.read(binIn);
                     if (f == null) break;
 
+                    // Ưu tiên tín hiệu call
                     if (callService != null && callService.tryHandleIncoming(f)) {
                         continue;
                     }
 
                     System.out.println("[NET] RECV type=" + f.type + " transferId=" + f.transferId + " body=" + f.body);
 
+                    // === ACK có transferId ===
                     if (f.type == MessageType.ACK && f.transferId != null && !f.transferId.isEmpty()) {
+                        // Bắt ACK FILE_SAVED để báo UI sớm (retag bubble)
+                        String status = jsonGet(f.body, "status");
+                        if ("FILE_SAVED".equals(status)) {
+                            final String fid = f.transferId;
+                            final long messageId = parseLongSafe(jsonGet(f.body, "messageId"), 0L);
+                            final long fileId    = parseLongSafe(jsonGet(f.body, "fileId"), 0L);
+
+                            if (midController != null) {
+                                javafx.application.Platform.runLater(() -> {
+                                    try {
+                                        midController.onOutgoingFileSaved(fid, messageId, fileId);
+                                    } catch (Exception uiEx) {
+                                        System.err.println("[UI] onOutgoingFileSaved failed: " + uiEx.getMessage());
+                                    }
+                                });
+                            }
+                        }
+
+                        // Hoàn tất future đợi ACK nhưng KHÔNG continue; để còn forward ACK lên tầng trên
                         CompletableFuture<Frame> fut = pendingAcks.remove(f.transferId);
                         if (fut != null) {
                             fut.complete(f);
-                            continue;
+                            // KHÔNG return/continue tại đây
                         }
                     }
 
+                    // === ERROR có transferId: fail future; vẫn có thể đẩy lên cho UI nếu cần ===
                     if (f.type == MessageType.ERROR && f.transferId != null && !f.transferId.isEmpty()) {
                         CompletableFuture<Frame> fut = pendingAcks.remove(f.transferId);
                         if (fut != null) {
                             fut.completeExceptionally(new IOException(f.body));
+                            // Không continue; để UI (onFrame) có thể hiện thông báo lỗi realtime nếu muốn
                         }
-                        if (midController != null) {
-                            // no-op
-                        }
-                        continue;
                     }
 
+                    // Forward các frame (kể cả ACK sau khi fix) lên tầng trên cho MessageHandler xử lý
                     if (this.onFrame != null) {
                         this.onFrame.accept(f);
                     }
                 }
+
                 if (this.onError != null) this.onError.accept(new EOFException("Server closed connection"));
             } catch (IOException e) {
                 if (this.onError != null) this.onError.accept(e);
@@ -373,4 +397,31 @@ public class ClientConnection {
         System.out.println("[DEBUG] Fallback mime: application/octet-stream");
         return "application/octet-stream";
     }
+    
+    private static String jsonGet(String json, String key) {
+        if (json == null) return null;
+        String kq = "\"" + key + "\"";
+        int i = json.indexOf(kq);
+        if (i < 0) return null;
+        int colon = json.indexOf(':', i + kq.length());
+        if (colon < 0) return null;
+        int j = colon + 1;
+        while (j < json.length() && Character.isWhitespace(json.charAt(j))) j++;
+        if (j >= json.length()) return null;
+        char c = json.charAt(j);
+        if (c == '"') {
+            int end = json.indexOf('"', j + 1);
+            if (end < 0) return null;
+            return json.substring(j + 1, end);
+        } else {
+            int end = j;
+            while (end < json.length() && "-0123456789".indexOf(json.charAt(end)) >= 0) end++;
+            return json.substring(j, end);
+        }
+    }
+    private static long parseLongSafe(String s, long def) {
+        if (s == null || s.isBlank()) return def;
+        try { return Long.parseLong(s); } catch (Exception e) { return def; }
+    }
+
 }

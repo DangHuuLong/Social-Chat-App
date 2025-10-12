@@ -178,6 +178,17 @@ public class MessageDao {
         }
     }
     
+    public String getSenderById(long id) throws SQLException {
+        String sql = "SELECT sender FROM messages WHERE id=?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString("sender");
+            }
+        }
+        return null;
+    }
+    
     public List<HistoryRow> searchConversation(String a, String b, String q, int limit, int offset) throws SQLException {
         String sql = """
             SELECT id,sender,recipient,body,created_at
