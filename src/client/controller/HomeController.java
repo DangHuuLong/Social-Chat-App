@@ -15,16 +15,20 @@ import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
 import javafx.scene.shape.Rectangle;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import server.dao.UserDAO;
 import javax.sound.sampled.*;
+import javafx.scene.image.Image;
 import java.io.*;
 import java.sql.SQLException;
+import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import javafx.scene.control.Dialog;
@@ -33,6 +37,8 @@ import javafx.scene.control.ButtonType;
 import javafx.util.Duration;
 
 public class HomeController {
+	@FXML private StackPane rootStack;
+	@FXML private HBox mainRow;
     @FXML private VBox chatList;
     @FXML private TextField searchField;
     @FXML private Label currentChatName;
@@ -59,9 +65,21 @@ public class HomeController {
     @FXML private ImageView midHeaderAvatar;
     @FXML private ImageView rightHeaderAvatar;
 
-
-	private HBox leftHeader;
-	private Region leftHeaderSpacer;
+    
+    @FXML private StackPane overlayLayer;
+    @FXML private StackPane overlayContent;
+    @FXML private javafx.scene.shape.Rectangle overlayDim;        
+    @FXML private Button btnOverlayClose;
+    @FXML private Button btnOverlayDownload;
+    @FXML private TabPane mediaTabs;
+    @FXML private TilePane photoGrid;
+    @FXML private TilePane videoGrid;
+    @FXML private VBox     docList;
+    @FXML private Accordion rightMenu;
+    @FXML private TitledPane mediaPane;
+    
+    @FXML private HBox leftHeader;
+    @FXML private Region leftHeaderSpacer;
 
     private final LeftController leftCtrl = new LeftController();
     private final MidController midCtrl = new MidController();
@@ -79,7 +97,9 @@ public class HomeController {
             titleLabel, toggleSidebarBtn, searchIconBtn,
             settingsBtn, leftHeader, leftHeaderSpacer
         );
-        rightCtrl.bind(infoName, chatStatus, rightHeaderAvatar);
+
+        rightCtrl.bind(infoName, chatStatus, rightHeaderAvatar, mediaTabs, photoGrid, videoGrid, docList);
+        rightCtrl.bindOverlay(overlayLayer, overlayContent, overlayDim, btnOverlayClose, btnOverlayDownload);
         midCtrl.bind(currentChatName, currentChatStatus, messageContainer, messageField, midHeaderAvatar);
 
         midCtrl.setRightController(rightCtrl);
@@ -95,11 +115,70 @@ public class HomeController {
             if (centerStack != null && centerStack.getScene() != null) {
                 leftCtrl.setHostStage((Stage) centerStack.getScene().getWindow());
             }
+
+            if (rootStack != null && mainRow != null) {
+                var w = rootStack.widthProperty();
+                sidebar.prefWidthProperty().bind(w.multiply(0.20));
+                centerStack.prefWidthProperty().bind(w.multiply(0.40));
+                rightStack.prefWidthProperty().bind(w.multiply(0.40));
+            }
         });
+        
+        VBox.setVgrow(mediaTabs, Priority.ALWAYS);
+
+        if (rightStack != null) {
+            if (rightMenu != null && mediaPane != null) {
+                rightMenu.setExpandedPane(mediaPane);
+            }
+            if (mediaTabs != null && rightMenu != null && mediaPane != null) {
+                mediaTabs.getSelectionModel().selectedItemProperty().addListener((obs, o, n) -> {
+                    rightMenu.setExpandedPane(mediaPane);
+                });
+            }
+        }
+
+        // ==== THÊM SAMPLE CHO 3 TAB ====
+        // Tải ảnh demo từ resources (dùng luôn avatar có sẵn)
+        Image demoImg = null;
+        try {
+            var url = getClass().getResource("/client/view/images/avatar.jpg"); // CHÚ Ý đúng đường dẫn trong resources
+            if (url != null) {
+                demoImg = new Image(url.toExternalForm(), false); // false = load sync
+            }
+        } catch (Exception ignore) {}
+
+        // Fallback 1x1 PNG trong suốt bằng Base64 (không dùng data:)
+        if (demoImg == null || demoImg.isError()) {
+            byte[] png = Base64.getDecoder().decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottQAAAABJRU5ErkJggg=="
+            );
+            demoImg = new Image(new ByteArrayInputStream(png));
+        }
+        // Ảnh: 6 thumb
+        rightCtrl.addPhotoThumb(demoImg, "p-1");
+        rightCtrl.addPhotoThumb(demoImg, "p-2");
+        rightCtrl.addPhotoThumb(demoImg, "p-3");
+        rightCtrl.addPhotoThumb(demoImg, "p-4");
+        rightCtrl.addPhotoThumb(demoImg, "p-5");
+        rightCtrl.addPhotoThumb(demoImg, "p-6");
+
+        // Video: 4 thumb (dùng ảnh làm thumbnail)
+        rightCtrl.addVideoThumb(demoImg, "v-1");
+        rightCtrl.addVideoThumb(demoImg, "v-2");
+        rightCtrl.addVideoThumb(demoImg, "v-3");
+        rightCtrl.addVideoThumb(demoImg, "v-4");
+
+        // Tài liệu: vài file thử
+        rightCtrl.addDocumentItem("Bao_cao_thang_09.pdf", "1.2 MB", "d-1");
+        rightCtrl.addDocumentItem("Ghi_am_cuoc_goi.wav",   "842 KB", "d-2");
+        rightCtrl.addDocumentItem("Task_List.xlsx",        "96 KB",  "d-3");
+        rightCtrl.addDocumentItem("Ke_hoach_Q4.docx",      "312 KB", "d-4");
+
 
         toggleCenterEmpty(true);
         toggleRightEmpty(true);
     }
+
     
     @FXML
     private void onRightSearchClick() {

@@ -582,3 +582,102 @@
 
 .dark #incoming-call .call-sep { -fx-background-color: rgba(255,255,255,0.06); }
 .dark #outgoing-call .call-sep { -fx-background-color: rgba(255,255,255,0.22); }
+
+/* ================== MEDIA LIB (RIGHT PANEL) ================== */
+
+/* TabPane cho "Ảnh / Video / Tài liệu" */
+.right-surface .tab-pane {
+  -fx-background-color: transparent;
+  -fx-padding: 0;
+}
+.right-surface .tab-pane > .tab-header-area {
+  -fx-padding: 0 0 8 0;
+  -fx-background-color: transparent;
+}
+.right-surface .tab-pane .tab-header-area .headers-region .tab {
+  -fx-background-radius: 8 8 0 0;
+  -fx-background-color: transparent;
+  -fx-padding: 6 12;
+  -fx-cursor: hand;
+}
+.right-surface .tab-pane .tab-header-area .headers-region .tab:hover {
+  -fx-background-color: rgba(24,130,255,0.06);
+}
+.right-surface .tab-pane .tab-header-area .headers-region .tab:selected {
+  -fx-background-color: rgba(24,130,255,0.12);
+}
+.right-surface .tab-pane .tab-header-area .tab-label {
+  -fx-text-fill: #0F172A;
+  -fx-font-size: 12px;
+  -fx-font-weight: bold;
+}
+
+/* Lưới thumbnail ảnh/video (ô vuông bo tròn) */
+.media-thumb {
+  -fx-background-color: #f3f4f6;
+  -fx-background-radius: 18;
+  -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.10), 8, 0.2, 0, 1);
+  -fx-cursor: hand;
+}
+.media-thumb:hover { -fx-opacity: 0.92; }
+
+/* Nếu muốn danh sách tài liệu gọn hơn trong Right Panel */
+.right-surface #outgoing-file,
+.right-surface #incoming-file {
+  -fx-background-radius: 12;
+}
+
+/* ================== DARK MODE: MEDIA ================== */
+
+.dark .right-surface .tab-pane .tab-header-area .headers-region .tab:hover {
+  -fx-background-color: rgba(255,255,255,0.06);
+}
+.dark .right-surface .tab-pane .tab-header-area .headers-region .tab:selected {
+  -fx-background-color: rgba(255,255,255,0.10);
+}
+.dark .right-surface .tab-pane .tab-header-area .tab-label {
+  -fx-text-fill: #E6EAF2;
+}
+
+.dark .media-thumb {
+  -fx-background-color: #0F141B;
+  -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.35), 8, 0.2, 0, 1);
+}
+
+
+/* Ẩn hoàn toàn thanh cuộn, vẫn cho lăn chuột */
+.media-scroll .scroll-bar:vertical,
+.media-scroll .scroll-bar:horizontal {
+  -fx-opacity: 0;
+  -fx-pref-width: 0;
+  -fx-pref-height: 0;
+}
+.media-scroll {
+  -fx-background-color: transparent;
+}
+.media-scroll > .viewport {
+  -fx-background-color: transparent;
+}
+
+/* Overlay actions (⬇️ / ❌) - Định nghĩa thống nhất */
+.overlay-action {
+  -fx-background-color: rgba(17,24,39,0.75);
+  -fx-text-fill: white;
+  -fx-background-radius: 10;
+  -fx-font-size: 16px;
+  -fx-padding: 6 10;
+  -fx-cursor: hand;
+  -fx-border-color: transparent;
+  -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.25), 10, 0.2, 0, 2);
+}
+.overlay-action:hover {
+  -fx-background-color: rgba(17,24,39,0.95);
+}
+
+.dark .overlay-action {
+  -fx-background-color: rgba(31,41,55,0.85);
+  -fx-text-fill: #E6EAF2;
+}
+.dark .overlay-action:hover {
+  -fx-background-color: rgba(31,41,55,1.0);
+}
