@@ -413,6 +413,14 @@ public class ClientHandler implements Runnable {
     private void handleFileHistory(Frame f) {
         int limit = 5;
         int offset = 0;
+        
+        // Lấy thông tin người đối thoại (peer) từ trường recipient
+        String peer = f.recipient;
+        if (peer == null || peer.isBlank()) {
+            sendFrame(Frame.error("MISSING_RECIPIENT_FOR_FILE_HISTORY"));
+            return;
+        }
+        
         try {
             if (f.body != null && !f.body.isBlank()) {
                 String body = f.body.trim();
@@ -420,19 +428,18 @@ public class ClientHandler implements Runnable {
                 String offsetStr = jsonGet(body, "offset");
                 if (limitStr != null)  limit  = Integer.parseInt(limitStr);
                 if (offsetStr != null) offset = Integer.parseInt(offsetStr);
-                if (limitStr == null && offsetStr == null) limit = Integer.parseInt(body);
             }
         } catch (Exception ignore) {}
 
         try {
-            var rows = fileDao.listByUserPaged(username, limit, offset);
+            // Gọi phương thức listByUserAndPeer mới trong FileDao
+            var rows = fileDao.listByUserAndPeer(username, peer, limit, offset);
             for (var r : rows) {
-                String info = String.format(
-                    "[FILE HIST] %s (%d bytes, %s)",
-                    r.fileName, r.fileSize,
-                    (r.uploadedAt != null ? r.uploadedAt.toString() : "unknown")
+                String jsonBody = String.format(
+                    "{\"file_name\":\"%s\",\"mime_type\":\"%s\",\"file_size\":%d,\"file_path\":\"%s\"}",
+                    escJson(r.fileName), escJson(r.mimeType), r.fileSize, escJson(r.filePath)
                 );
-                Frame hist = new Frame(MessageType.FILE_HISTORY, username, username, info);
+                Frame hist = new Frame(MessageType.FILE_HISTORY, username, peer, jsonBody);
                 hist.transferId = String.valueOf(r.id);
                 sendFrame(hist);
             }

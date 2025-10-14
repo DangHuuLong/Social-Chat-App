@@ -102,13 +102,20 @@ public class HomeController {
         rightCtrl.bindOverlay(overlayLayer, overlayContent, overlayDim, btnOverlayClose, btnOverlayDownload);
         midCtrl.bind(currentChatName, currentChatStatus, messageContainer, messageField, midHeaderAvatar);
 
+        rightCtrl.setMidController(midCtrl);
         midCtrl.setRightController(rightCtrl);
 
+        // Cập nhật sự kiện khi mở đoạn chat
         leftCtrl.setOnOpenConversation(user -> {
             currentPeerUsername = (user != null ? user.getUsername() : null);
+            // REMOVE this line: currentPeerChatId = (user != null ? user.getChatId() : null);
             toggleCenterEmpty(false);
             toggleRightEmpty(false);
             midCtrl.openConversation(user);
+
+            if (currentPeerUsername != null && connection != null && connection.isAlive()) {
+                loadChatFiles(currentPeerUsername);
+            }
         });
 
         Platform.runLater(() -> {
@@ -136,49 +143,31 @@ public class HomeController {
                 });
             }
         }
-
-        // ==== THÊM SAMPLE CHO 3 TAB ====
-        // Tải ảnh demo từ resources (dùng luôn avatar có sẵn)
-        Image demoImg = null;
-        try {
-            var url = getClass().getResource("/client/view/images/avatar.jpg"); // CHÚ Ý đúng đường dẫn trong resources
-            if (url != null) {
-                demoImg = new Image(url.toExternalForm(), false); // false = load sync
-            }
-        } catch (Exception ignore) {}
-
-        // Fallback 1x1 PNG trong suốt bằng Base64 (không dùng data:)
-        if (demoImg == null || demoImg.isError()) {
-            byte[] png = Base64.getDecoder().decode(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottQAAAABJRU5ErkJggg=="
-            );
-            demoImg = new Image(new ByteArrayInputStream(png));
-        }
-        // Ảnh: 6 thumb
-        rightCtrl.addPhotoThumb(demoImg, "p-1");
-        rightCtrl.addPhotoThumb(demoImg, "p-2");
-        rightCtrl.addPhotoThumb(demoImg, "p-3");
-        rightCtrl.addPhotoThumb(demoImg, "p-4");
-        rightCtrl.addPhotoThumb(demoImg, "p-5");
-        rightCtrl.addPhotoThumb(demoImg, "p-6");
-
-        // Video: 4 thumb (dùng ảnh làm thumbnail)
-        rightCtrl.addVideoThumb(demoImg, "v-1");
-        rightCtrl.addVideoThumb(demoImg, "v-2");
-        rightCtrl.addVideoThumb(demoImg, "v-3");
-        rightCtrl.addVideoThumb(demoImg, "v-4");
-
-        // Tài liệu: vài file thử
-        rightCtrl.addDocumentItem("Bao_cao_thang_09.pdf", "1.2 MB", "d-1");
-        rightCtrl.addDocumentItem("Ghi_am_cuoc_goi.wav",   "842 KB", "d-2");
-        rightCtrl.addDocumentItem("Task_List.xlsx",        "96 KB",  "d-3");
-        rightCtrl.addDocumentItem("Ke_hoach_Q4.docx",      "312 KB", "d-4");
-
-
+        
         toggleCenterEmpty(true);
         toggleRightEmpty(true);
     }
 
+    private void loadChatFiles(String peerUsername) {
+        if (connection != null && connection.isAlive()) {
+            try {
+                // Xóa dữ liệu cũ trên các tab
+                rightCtrl.clearMediaTabs();
+                
+                // Gửi yêu cầu tải lịch sử file
+                connection.sendFileHistoryRequest(currentUser.getUsername(), peerUsername, 100, 0);
+            } catch (IOException e) {
+                System.err.println("[FILE] Failed to request file history: " + e.getMessage());
+            }
+        }
+    }
+    
+    public User getCurrentUser() {
+        return currentUser;
+    }
+    public String getCurrentPeerUsername() {
+        return currentPeerUsername;
+    }
     
     @FXML
     private void onRightSearchClick() {

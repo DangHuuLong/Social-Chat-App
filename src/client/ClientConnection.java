@@ -29,8 +29,8 @@ public class ClientConnection {
     private MidController midController;
     private final ConcurrentHashMap<String, Long> fidToMsgId  = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> fidToFileId = new ConcurrentHashMap<>();
-
-
+    private final java.util.Set<Long> inFlightDownloads =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
     public boolean connect(String host, int port) {
         try {
             socket = new Socket();
@@ -46,6 +46,20 @@ public class ClientConnection {
             return false;
         }
     }
+    
+    public void markDownloadDone(String fid) {
+        if (fid == null) return;
+        try {
+            long id = Long.parseLong(fid);
+            inFlightDownloads.remove(id);
+        } catch (NumberFormatException ignore) {
+        }
+    }
+
+    public void markDownloadDone(long fileId) {
+        inFlightDownloads.remove(fileId);
+    }
+
 
     public boolean isAlive() {
         return socket != null && socket.isConnected() && !socket.isClosed();
@@ -78,21 +92,18 @@ public class ClientConnection {
                     Frame f = FrameIO.read(binIn);
                     if (f == null) break;
 
-                    // Ưu tiên tín hiệu call
                     if (callService != null && callService.tryHandleIncoming(f)) {
                         continue;
                     }
 
                     System.out.println("[NET] RECV type=" + f.type + " transferId=" + f.transferId + " body=" + f.body);
 
-                    // === ACK có transferId ===
                     if (f.type == MessageType.ACK && f.transferId != null && !f.transferId.isEmpty()) {
-                        // Bắt ACK FILE_SAVED để báo UI sớm (retag bubble)
                         String status = jsonGet(f.body, "status");
                         if ("FILE_SAVED".equals(status)) {
                             final String fid = f.transferId;
                             final long messageId = parseLongSafe(jsonGet(f.body, "messageId"), 0L);
-                            final long fileId    = parseLongSafe(jsonGet(f.body, "fileId"), 0L);
+                            final long fileId  = parseLongSafe(jsonGet(f.body, "fileId"), 0L);
 
                             if (midController != null) {
                                 javafx.application.Platform.runLater(() -> {
@@ -105,24 +116,19 @@ public class ClientConnection {
                             }
                         }
 
-                        // Hoàn tất future đợi ACK nhưng KHÔNG continue; để còn forward ACK lên tầng trên
                         CompletableFuture<Frame> fut = pendingAcks.remove(f.transferId);
                         if (fut != null) {
                             fut.complete(f);
-                            // KHÔNG return/continue tại đây
                         }
                     }
 
-                    // === ERROR có transferId: fail future; vẫn có thể đẩy lên cho UI nếu cần ===
                     if (f.type == MessageType.ERROR && f.transferId != null && !f.transferId.isEmpty()) {
                         CompletableFuture<Frame> fut = pendingAcks.remove(f.transferId);
                         if (fut != null) {
                             fut.completeExceptionally(new IOException(f.body));
-                            // Không continue; để UI (onFrame) có thể hiện thông báo lỗi realtime nếu muốn
                         }
                     }
 
-                    // Forward các frame (kể cả ACK sau khi fix) lên tầng trên cho MessageHandler xử lý
                     if (this.onFrame != null) {
                         this.onFrame.accept(f);
                     }
@@ -180,10 +186,15 @@ public class ClientConnection {
     }
     
     public void downloadFileByFileId(long fileId) throws IOException {
+        // Guard chống gửi trùng
+        if (!inFlightDownloads.add(fileId)) {
+            System.out.println("[DOWNLOAD] skip duplicate request fileId=" + fileId);
+            return;
+        }
         Frame req = new Frame(MessageType.DOWNLOAD_FILE, "", "", "{\"fileId\":" + fileId + "}");
         sendFrame(req);
     }
-
+    
     public void downloadFileByMsgId(long msgId) throws IOException {
         Frame req = new Frame(MessageType.DOWNLOAD_FILE, "", "", "{\"messageId\":" + msgId + "}");
         sendFrame(req);
@@ -194,6 +205,11 @@ public class ClientConnection {
         sendFrame(req);
     }
 
+    public void sendFileHistoryRequest(String fromUser, String peerUsername, int limit, int offset) throws IOException {
+        String body = String.format("{\"limit\":%d, \"offset\":%d}", limit, offset);
+        Frame req = new Frame(MessageType.FILE_HISTORY, fromUser, peerUsername, body);
+        sendFrame(req);
+    }
 
     public synchronized Frame sendFileWithAck(String from, String to, File file, String mimeOrNull, String fileId, long timeoutMs)
             throws Exception {
@@ -224,7 +240,7 @@ public class ClientConnection {
                 final String fFileId = fileId;
                 final String fMime = (mime == null ? "application/octet-stream" : mime);
                 final String fName = file.getName();
-                final long   fSize = file.length();
+                final long  fSize = file.length();
                 final String fDuration = durationVal;
                 final String localUrl = file.toURI().toString();
 
@@ -345,7 +361,6 @@ public class ClientConnection {
 
                 Frame ack = fut.get(timeoutMs, TimeUnit.MILLISECONDS);
                 if (midController != null) {
-                    // no-op
                 }
                 return ack;
             } catch (IOException e) {
@@ -356,13 +371,11 @@ public class ClientConnection {
             } catch (TimeoutException te) {
                 pendingAcks.remove(audioId);
                 if (midController != null) {
-                    // no-op
                 }
                 throw te;
             }
         }
         if (midController != null) {
-            // no-op
         }
         throw lastEx != null ? lastEx : new IOException("Failed to send audio after " + retries + " attempts");
     }
@@ -423,5 +436,4 @@ public class ClientConnection {
         if (s == null || s.isBlank()) return def;
         try { return Long.parseLong(s); } catch (Exception e) { return def; }
     }
-
 }

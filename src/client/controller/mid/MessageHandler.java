@@ -3,6 +3,12 @@ package client.controller.mid;
 import common.Frame;
 import javafx.application.Platform;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
+import javafx.scene.image.Image;
+import javafx.scene.image.WritableImage;
+import client.controller.MidController;
+import javafx.scene.Node;
+
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -12,24 +18,521 @@ import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import javafx.scene.image.Image;
-import javafx.scene.image.WritableImage;
-import client.controller.MidController;
-
 public class MessageHandler {
     private final MidController controller;
 
     // === STATE: chống render trùng CallLog & chống tải trùng file ===
-    private static final Set<String> renderedCallLogIds =
-            Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final Set<String> requestedDownloads =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
-    public boolean markDownloadRequested(String key) { return requestedDownloads.add(key); }
+
+    public boolean markDownloadRequested(String key) {
+        return requestedDownloads.add(key);
+    }
 
     public MessageHandler(MidController controller) {
         this.controller = controller;
     }
 
+    // ===================== MAIN DISPATCH =====================
+
+    public void handleServerFrame(Frame f) {
+        if (f == null) return;
+        String openPeer = (controller.getSelectedUser() != null) ? controller.getSelectedUser().getUsername() : null;
+
+        switch (f.type) {
+            case DM -> handleDmFrame(f, openPeer);
+            case HISTORY -> handleHistoryFrame(f, openPeer);
+            case FILE_EVT, AUDIO_EVT -> handleFileEvtFrame(f, openPeer);
+            case FILE_META -> handleFileMetaFrame(f);
+            case FILE_CHUNK -> handleFileChunkFrame(f);
+            case DELETE_MSG -> handleDeleteMsgFrame(f);
+            case EDIT_MSG -> handleEditMsgFrame(f);
+            case ACK -> handleAckFrame(f);
+            case FILE_HISTORY -> handleFileHistoryFrame(f);
+            case ERROR -> Platform.runLater(() -> controller.showErrorAlert("Lỗi: " + f.body));
+        }
+    }
+
+    // ===================== PRIVATE HANDLERS =====================
+
+    private void handleDmFrame(Frame f, String openPeer) {
+        String sender = f.sender;
+        String body = f.body == null ? "" : f.body;
+
+        if (body.startsWith("[CALLLOG]")) {
+            if (openPeer != null && openPeer.equals(sender)) {
+                CallLogData d = parseCallLog(body);
+                renderCallLogOnce(d, true);
+            }
+            return;
+        }
+
+        if (openPeer != null && openPeer.equals(sender)) {
+            controller.addTextMessage(body, true, f.transferId);
+        }
+    }
+
+    private void handleHistoryFrame(Frame f, String openPeer) {
+        String line = f.body == null ? "" : f.body.trim();
+
+        if (line.startsWith("[HIST IN]")) {
+            String payload = line.substring(9).trim();
+            int p = payload.indexOf(": ");
+            if (p > 0) {
+                String sender = payload.substring(0, p);
+                String body = payload.substring(p + 2);
+                if (openPeer != null && openPeer.equals(sender)) {
+                    handleHistoryContent(body, f.transferId, true);
+                }
+            }
+        } else if (line.startsWith("[HIST OUT]")) {
+            String body = line.substring(10).trim();
+            handleHistoryContent(body, f.transferId, false);
+        }
+    }
+
+    private void handleHistoryContent(String body, Object transferId, boolean incoming) {
+        if (body.startsWith("[CALLLOG]")) {
+            CallLogData d = parseCallLog(body);
+            renderCallLogOnce(d, incoming);
+            return;
+        }
+
+        long msgId = 0L;
+        try {
+            msgId = Long.parseLong(String.valueOf(transferId));
+        } catch (Exception ignore) {}
+        String msgIdStr = (msgId > 0 ? String.valueOf(msgId) : null);
+
+        if (body.startsWith("[FILE]")) {
+            String name = body.substring(6).trim();
+            String meta = "";
+            HBox row = controller.addFileMessage(name, meta, incoming, msgIdStr);
+            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+            if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
+                String key = String.valueOf(msgId);
+                if (markDownloadRequested(key)) {
+                    try {
+                        controller.getConnection().downloadFileByMsgId(msgId);
+                    } catch (IOException ignore) {}
+                }
+            }
+        } else if (body.startsWith("[AUDIO]")) {
+            String dur = "--:--";
+            HBox row = controller.addVoiceMessage(dur, incoming, msgIdStr);
+            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+            if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
+                String key = String.valueOf(msgId);
+                if (markDownloadRequested(key)) {
+                    try {
+                        controller.getConnection().downloadFileByMsgId(msgId);
+                    } catch (IOException ignore) {}
+                }
+            }
+        } else if (body.startsWith("[VIDEO]")) {
+            String name = body.substring(7).trim();
+            String meta = "";
+            HBox row = controller.addVideoMessage(name, meta, incoming, msgIdStr);
+            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+            if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
+                String key = String.valueOf(msgId);
+                if (markDownloadRequested(key)) {
+                    try {
+                        controller.getConnection().downloadFileByMsgId(msgId);
+                    } catch (IOException ignore) {}
+                }
+            }
+        } else {
+        	controller.addTextMessage(body, incoming, String.valueOf(transferId));
+        }
+    }
+
+    private void handleFileEvtFrame(Frame f, String openPeer) {
+        String json = f.body == null ? "" : f.body;
+        String from = UtilHandler.jsonGet(json, "from");
+        String name = UtilHandler.jsonGet(json, "name");
+        String mime = UtilHandler.jsonGet(json, "mime");
+        long bytes = UtilHandler.parseLongSafe(UtilHandler.jsonGet(json, "bytes"), 0);
+        int duration = UtilHandler.parseIntSafe(UtilHandler.jsonGet(json, "duration"), 0);
+        String uuid = UtilHandler.jsonGet(json, "uuid");
+        String legacy = UtilHandler.jsonGet(json, "id");
+        String dbIdStr = UtilHandler.jsonGet(json, "fileId");
+        Long dbId = null;
+        if (dbIdStr != null && !dbIdStr.isBlank()) {
+            try {
+                dbId = Long.parseLong(dbIdStr);
+            } catch (Exception ignore) {}
+        }
+        String bubbleKey = (legacy != null && !legacy.isBlank()) ? legacy : (uuid != null && !uuid.isBlank() ? uuid : null);
+        if (bubbleKey != null && name != null) controller.getFileIdToName().put(bubbleKey, name);
+        if (bubbleKey != null && mime != null && !mime.isBlank()) controller.getFileIdToMime().put(bubbleKey, mime);
+        if (dbId != null && dbId > 0) {
+            String dbKey = String.valueOf(dbId);
+            if (name != null) controller.getFileIdToName().put(dbKey, name);
+            if (mime != null && !mime.isBlank()) controller.getFileIdToMime().put(dbKey, mime);
+        }
+        if (openPeer != null && openPeer.equals(from)) {
+            String displayKey = (dbId != null && dbId > 0) ? String.valueOf(dbId) : (bubbleKey != null ? bubbleKey : "");
+            UtilHandler.MediaKind kind = UtilHandler.classifyMedia(mime, name);
+            String sizeOnly = (bytes > 0) ? UtilHandler.humanBytes(bytes) : "";
+            HBox row;
+            switch (kind) {
+                case IMAGE -> {
+                    Image img = new WritableImage(8, 8);
+                    row = controller.addImageMessage(img, name + (sizeOnly.isBlank() ? "" : " • " + sizeOnly), true);
+                }
+                case AUDIO -> {
+                    String dur = (duration > 0) ? UtilHandler.formatDuration(duration) : "--:--";
+                    row = controller.addVoiceMessage(dur, true, null);
+                }
+                case VIDEO -> {
+                    row = controller.addVideoMessage(name, sizeOnly, true, null);
+                }
+                default -> {
+                    row = controller.addFileMessage(name, sizeOnly, true, null);
+                }
+            }
+            if (!displayKey.isEmpty()) row.getProperties().put("fid", displayKey);
+            String msgIdStr0 = UtilHandler.jsonGet(json, "messageId");
+            if (msgIdStr0 != null && !msgIdStr0.isBlank()) {
+                controller.getFileIdToMsgId().put(displayKey, msgIdStr0);
+                try {
+                    Long.parseLong(msgIdStr0);
+                    row.setUserData(msgIdStr0);
+                } catch (Exception ignore) {}
+            }
+
+            if (controller.getConnection() != null && controller.getConnection().isAlive()) {
+                Long msgId = null;
+                String msgIdS = UtilHandler.jsonGet(json, "messageId");
+                if (msgIdS != null && !msgIdS.isBlank()) {
+                    try {
+                        msgId = Long.parseLong(msgIdS);
+                    } catch (Exception ignore) {}
+                }
+                try {
+                    if (dbId != null && dbId > 0) controller.getConnection().downloadFileByFileId(dbId);
+                    else if (msgId != null && msgId > 0) controller.getConnection().downloadFileByMsgId(msgId);
+                    else if (bubbleKey != null) controller.getConnection().downloadFileLegacy(bubbleKey);
+                } catch (IOException e) {
+                    System.err.println("[DL] request failed: " + e.getMessage());
+                }
+            }
+        } else {
+            controller.getPendingFileEvents().computeIfAbsent(from, k -> new ArrayList<>()).add(f);
+        }
+    }
+
+    private void handleFileMetaFrame(Frame f) {
+        String body = (f.body == null) ? "" : f.body;
+        String fid = UtilHandler.jsonGet(body, "fileId");
+        String msgIdStr = UtilHandler.jsonGet(body, "messageId");
+        String name = UtilHandler.jsonGet(body, "name");
+        String mime = UtilHandler.jsonGet(body, "mime");
+        long metaSize = UtilHandler.parseLongSafe(UtilHandler.jsonGet(body, "size"), 0);
+        if (metaSize <= 0) metaSize = UtilHandler.parseLongSafe(UtilHandler.jsonGet(body, "bytes"), 0);
+        final long sizeHint = metaSize;
+
+        if (fid == null || fid.isBlank()) return;
+
+        if (msgIdStr != null && !msgIdStr.isBlank()) {
+            controller.getFileIdToMsgId().put(fid, msgIdStr);
+            HBox rowByHist = controller.getPendingHistoryFileRows().remove(msgIdStr);
+            if (rowByHist != null) {
+                rowByHist.getProperties().put("fid", fid);
+            }
+            boolean tagged = false;
+            try {
+                Long.parseLong(msgIdStr);
+                HBox row = controller.findRowByFid(fid);
+                if (row != null) {
+                    Object ud = row.getUserData();
+                    boolean hasNumeric = false;
+                    if (ud != null) {
+                        try {
+                            Long.parseLong(String.valueOf(ud));
+                            hasNumeric = true;
+                        } catch (Exception ignore) {}
+                    }
+                    if (!hasNumeric) {
+                        row.setUserData(msgIdStr);
+                        tagged = true;
+                    }
+                }
+            } catch (Exception ignore) {}
+            if (!tagged) {
+                var mc = controller.getMessageContainer();
+                if (mc != null && !mc.getChildren().isEmpty()) {
+                    for (int i = mc.getChildren().size() - 1; i >= 0; i--) {
+                        var n = mc.getChildren().get(i);
+                        if (n instanceof HBox h) {
+                            Object ud = h.getUserData();
+                            boolean hasNumeric = false;
+                            if (ud != null) {
+                                try {
+                                    Long.parseLong(String.valueOf(ud));
+                                    hasNumeric = true;
+                                } catch (Exception ignore) {}
+                            }
+                            if (hasNumeric) continue;
+                            Node b = h.getChildren().isEmpty() ? null : h.getChildren().get(h.getChildren().size() - 1);
+                            if (b instanceof VBox vb) {
+                                String bid = vb.getId();
+                                if (bid != null && bid.startsWith("outgoing-")) {
+                                    h.setUserData(msgIdStr);
+                                    h.getProperties().put("fid", fid);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        try {
+            if (msgIdStr != null && !msgIdStr.isBlank()) {
+                String midKey = "MID_" + msgIdStr;
+                BufferedOutputStream bosOld = controller.getDlOut().remove(midKey);
+                File destOld = controller.getDlPath().remove(midKey);
+                if (bosOld != null && destOld != null) {
+                    controller.getDlOut().put(fid, bosOld);
+                    controller.getDlPath().put(fid, destOld);
+                    System.out.println("[DLSAVE] REBIND stream from " + midKey + " -> " + fid + " dest=" + destOld.getAbsolutePath());
+                    HBox rByMidKey = controller.findRowByFid(midKey);
+                    if (rByMidKey != null) {
+                        rByMidKey.getProperties().put("fid", fid);
+                        System.out.println("[DLSAVE] REBIND row fid property from " + midKey + " -> " + fid);
+                    }
+                }
+            }
+        } catch (Exception rebindEx) {
+            System.out.println("[DLSAVE] REBIND failed ex=" + rebindEx);
+        }
+        if (sizeHint > 0) controller.getFileIdToSize().put(fid, sizeHint);
+        if (mime == null || mime.isBlank()) mime = "application/octet-stream";
+        controller.getFileIdToMime().put(fid, mime);
+        if (name != null && !name.isBlank()) controller.getFileIdToName().put(fid, name);
+        try {
+            BufferedOutputStream existed = controller.getDlOut().get(fid);
+            File existedFile = controller.getDlPath().get(fid);
+            if (existed != null && existedFile != null) {
+                System.out.println("[DLSAVE] FILE_META reuse existing dest=" + existedFile.getAbsolutePath());
+            } else {
+                String ext = UtilHandler.guessExt(mime, controller.getFileIdToName().get(fid));
+                File tmp = File.createTempFile("im_", "_" + fid + (ext == null ? "" : ext));
+                BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(tmp));
+                controller.getDlPath().put(fid, tmp);
+                controller.getDlOut().put(fid, bos);
+                System.out.println("[DLSAVE] FILE_META create temp=" + tmp.getAbsolutePath());
+            }
+        } catch (Exception ex) {
+            System.out.println("[DLSAVE] FILE_META prepare dest failed ex=" + ex);
+        }
+        UtilHandler.MediaKind kind = UtilHandler.classifyMedia(mime, controller.getFileIdToName().get(fid));
+        switch (kind) {
+            case FILE -> Platform.runLater(() -> {
+                HBox row = controller.findRowByFid(fid);
+                if (row != null && controller.getMediaHandler() != null) {
+                    controller.getMediaHandler().updateGenericFileMeta(row, fid, sizeHint);
+                }
+            });
+            case IMAGE -> refreshImageCaption(fid, sizeHint);
+            case VIDEO -> refreshVideoLabels(fid, sizeHint);
+            default -> {}
+        }
+    }
+
+
+    private void handleFileChunkFrame(Frame f) {
+        String fid = f.transferId;
+        byte[] data = (f.bin == null) ? new byte[0] : f.bin;
+        BufferedOutputStream bos = controller.getDlOut().get(fid);
+        
+        if (bos != null) {
+            try {
+                // Ghi dữ liệu từ chunk vào luồng đầu ra
+                if (data.length > 0) bos.write(data);
+            } catch (IOException e) {
+                System.err.println("[DL] write failed: " + e.getMessage());
+                // Đóng stream và xóa nó khỏi map nếu có lỗi
+                try { bos.close(); } catch (IOException ignore) {}
+                controller.getDlOut().remove(fid);
+                return; // Dừng xử lý chunk này
+            }
+            
+            // Kiểm tra xem đây có phải là chunk cuối cùng không
+            if (f.last) {
+                try {
+                    // Đóng luồng
+                    bos.flush();
+                    bos.close();
+                } catch (Exception ignore) {}
+                
+                // Xóa luồng ra khỏi map
+                controller.getDlOut().remove(fid);
+                
+                // Lấy file đã tải xuống
+                File file = controller.getDlPath().remove(fid);
+                
+                if (file != null) {
+                	controller.onDownloadCompleted(fid, file);
+                    Platform.runLater(() -> {
+                        // Tìm tin nhắn tương ứng trong luồng chat
+                        HBox row = controller.findRowByFid(fid);
+                        if (row == null) return;
+                        
+                        String mime = controller.getFileIdToMime().getOrDefault(fid, "application/octet-stream");
+                        UtilHandler.MediaKind kind = UtilHandler.classifyMedia(mime, controller.getFileIdToName().get(fid));
+                        String fileUrl = file.toURI().toString();
+                        
+                        try {
+                            // Cập nhật giao diện tin nhắn dựa trên loại file
+                            switch (kind) {
+                                case AUDIO -> controller.getMediaHandler().updateVoiceBubbleFromUrl(row, fileUrl);
+                                case VIDEO -> {
+                                    controller.getMediaHandler().updateVideoBubbleFromUrl(row, fileUrl);
+                                    refreshVideoLabels(fid, file.length());
+                                }
+                                case IMAGE -> {
+                                    controller.getMediaHandler().updateImageBubbleFromUrl(row, fileUrl);
+                                    refreshImageCaption(fid, file.length());
+                                }
+                                default -> controller.getMediaHandler().updateGenericFileMetaByFid(fid);
+                            }
+                        } catch (Exception ex) {
+                            System.err.println("[UI] Failed to update bubble after download: " + ex.getMessage());
+                        }
+                        
+                        // Kiểm tra và mở thư mục chứa file nếu cần
+                        try {
+                            boolean shouldOpen = false;
+                            if (row != null) {
+                                Object flag = row.getProperties().get("saveToChosen");
+                                shouldOpen = (flag instanceof Boolean b && b);
+                                if (shouldOpen) row.getProperties().remove("saveToChosen");
+                            }
+                            if (shouldOpen) {
+                                System.out.println("[DLSAVE] open folder after done: " + file.getAbsolutePath());
+                                try {
+                                    java.awt.Desktop.getDesktop().open(file.getParentFile());
+                                } catch (Exception ex2) {
+                                    System.out.println("[DLSAVE] open folder failed ex=" + ex2);
+                                }
+                            }
+                        } catch (Exception ignore) {}
+                    });
+                }
+            }
+        }
+    }
+    private void handleDeleteMsgFrame(Frame f) {
+        String id = f.transferId;
+        if (id != null) {
+            Platform.runLater(() -> controller.removeMessageById(id));
+        }
+    }
+
+    private void handleEditMsgFrame(Frame f) {
+        String id = f.transferId;
+        String newBody = (f.body == null) ? "" : f.body;
+        if (id != null) {
+            Platform.runLater(() -> controller.updateTextBubbleById(id, newBody));
+        }
+    }
+
+    private void handleAckFrame(Frame f) {
+        String body = (f.body == null) ? "" : f.body;
+        if (f.transferId != null && (body.startsWith("OK DM") || body.startsWith("OK QUEUED"))) {
+            controller.tagNextPendingOutgoing(f.transferId);
+            return;
+        }
+        if (body.contains("\"status\"") && body.contains("FILE_SAVED")) {
+            String uuid = f.transferId;
+            String msgIdStr = UtilHandler.jsonGet(body, "messageId");
+            String fileIdStr = UtilHandler.jsonGet(body, "fileId");
+            String bytesStr = UtilHandler.jsonGet(body, "bytes");
+            String mime = UtilHandler.jsonGet(body, "mime");
+            Long msgId = null, fileId = null, bytes = null;
+            try {
+                if (msgIdStr != null) msgId = Long.parseLong(msgIdStr);
+            } catch (Exception ignore) {}
+            try {
+                if (fileIdStr != null) fileId = Long.parseLong(fileIdStr);
+            } catch (Exception ignore) {}
+            try {
+                if (bytesStr != null) bytes = Long.parseLong(bytesStr);
+            } catch (Exception ignore) {}
+            HBox row = (uuid != null) ? controller.findRowByFid(uuid) : null;
+            if (row == null && uuid != null) {
+                row = controller.getOutgoingFileBubbles().get(uuid);
+            }
+            if (row != null) {
+                if (fileId != null) {
+                    row.getProperties().put("fid", String.valueOf(fileId));
+                }
+                if (msgId != null) {
+                    row.setUserData(String.valueOf(msgId));
+                }
+                if (fileId != null && msgId != null) {
+                    controller.getFileIdToMsgId().put(String.valueOf(fileId), String.valueOf(msgId));
+                }
+                if (mime != null && !mime.isBlank()) {
+                    controller.getFileIdToMime().put(String.valueOf(fileId), mime);
+                }
+                if (bytes != null && bytes >= 0) {
+                    controller.getFileIdToSize().put(String.valueOf(fileId), bytes);
+                }
+                if (uuid != null && fileId != null) {
+                    controller.getOutgoingFileBubbles().remove(uuid);
+                    controller.getOutgoingFileBubbles().put(String.valueOf(fileId), row);
+                }
+            }
+            if (controller.getConnection() != null && controller.getConnection().isAlive() && fileId != null) {
+                try {
+                    controller.getConnection().downloadFileByFileId(fileId);
+                } catch (IOException ignore) {}
+            }
+        }
+    }
+
+    private void handleFileHistoryFrame(Frame f) {
+        String body = f.body;
+        if (body == null || body.isBlank()) return;
+
+        try {
+            long fileId = UtilHandler.parseLongSafe(f.transferId, 0);
+            String fileName = UtilHandler.jsonGet(body, "file_name");
+            String mimeType = UtilHandler.jsonGet(body, "mime_type");
+            long fileSize = UtilHandler.parseLongSafe(UtilHandler.jsonGet(body, "file_size"), 0);
+            String filePath = UtilHandler.jsonGet(body, "file_path"); // Lấy đường dẫn file từ JSON
+
+            if (fileId <= 0 || fileName == null || filePath == null) return;
+
+            Platform.runLater(() -> {
+                UtilHandler.MediaKind kind = UtilHandler.classifyMedia(mimeType, fileName);
+                
+                switch (kind) {
+                    case IMAGE:
+                        // Thêm tham số filePath
+                        controller.getRightController().addPhotoThumb(String.valueOf(fileId), fileName, fileSize, filePath);
+                        break;
+                    case VIDEO:
+                        // Thêm tham số filePath
+                        controller.getRightController().addVideoThumb(String.valueOf(fileId), fileName, fileSize, filePath);
+                        break;
+                    case AUDIO:
+                    case FILE:
+                    default:
+                        // Thêm tham số mimeType và filePath
+                        controller.getRightController().addDocumentItem(String.valueOf(fileId), fileName, fileSize, mimeType, filePath);
+                        break;
+                }
+            });
+        } catch (Exception e) {
+            System.err.println("Failed to parse file history frame: " + e.getMessage());
+        }
+    }
+    
     // ===================== UI REFRESH HELPERS (ẢNH/VIDEO) =====================
 
     private void refreshImageCaption(String fid, Long sizeHint) {
@@ -45,7 +548,10 @@ public class MessageHandler {
             if (id == null || !id.endsWith("-image")) return;
             javafx.scene.control.Label cap = null;
             for (javafx.scene.Node n : box.getChildren()) {
-                if (n instanceof javafx.scene.control.Label l) { cap = l; break; }
+                if (n instanceof javafx.scene.control.Label l) {
+                    cap = l;
+                    break;
+                }
             }
             if (cap == null) return;
             String name = controller.getFileIdToName().getOrDefault(fid, "");
@@ -68,7 +574,6 @@ public class MessageHandler {
         });
     }
 
-
     private void refreshVideoLabels(String fid, Long sizeHint) {
         if (fid == null || fid.isBlank()) return;
         Platform.runLater(() -> {
@@ -82,7 +587,10 @@ public class MessageHandler {
             if (id == null || !id.endsWith("-video")) return;
             javafx.scene.layout.VBox controls = null;
             for (javafx.scene.Node n : box.getChildren()) {
-                if (n instanceof javafx.scene.layout.VBox v && "videoControls".equals(v.getId())) { controls = v; break; }
+                if (n instanceof javafx.scene.layout.VBox v && "videoControls".equals(v.getId())) {
+                    controls = v;
+                    break;
+                }
             }
             if (controls == null) {
                 if (box.getChildren().size() >= 2 && box.getChildren().get(1) instanceof javafx.scene.layout.VBox v) {
@@ -103,7 +611,11 @@ public class MessageHandler {
                 javafx.scene.control.Label firstLabel = null, secondLabel = null;
                 for (javafx.scene.Node n : cs) {
                     if (n instanceof javafx.scene.control.Label l) {
-                        if (firstLabel == null) firstLabel = l; else { secondLabel = l; break; }
+                        if (firstLabel == null) firstLabel = l;
+                        else {
+                            secondLabel = l;
+                            break;
+                        }
                     }
                 }
                 if (nameLbl == null) nameLbl = firstLabel;
@@ -127,486 +639,6 @@ public class MessageHandler {
             }
             if (metaLbl != null) metaLbl.setText(meta);
         });
-    }
-
-
-    // ===================== MAIN DISPATCH =====================
-
-    public void handleServerFrame(Frame f) {
-        if (f == null) return;
-        String openPeer = (controller.getSelectedUser() != null) ? controller.getSelectedUser().getUsername() : null;
-
-        switch (f.type) {
-
-            // === DIRECT MESSAGE ===
-            case DM -> {
-                String sender = f.sender;
-                String body = f.body == null ? "" : f.body;
-
-                if (body.startsWith("[CALLLOG]")) {
-                    if (openPeer != null && openPeer.equals(sender)) {
-                        CallLogData d = parseCallLog(body);
-                        renderCallLogOnce(d, true);
-                    }
-                    break;
-                }
-
-                if (openPeer != null && openPeer.equals(sender)) {
-                    controller.addTextMessage(body, true, f.transferId);
-                }
-            }
-
-            // === HISTORY ===
-            case HISTORY -> {
-                String line = f.body == null ? "" : f.body.trim();
-
-                if (line.startsWith("[HIST IN]")) {
-                    String payload = line.substring(9).trim();
-                    int p = payload.indexOf(": ");
-                    if (p > 0) {
-                        String sender = payload.substring(0, p);
-                        String body = payload.substring(p + 2);
-
-                        if (body.startsWith("[CALLLOG]")) {
-                            if (openPeer != null && openPeer.equals(sender)) {
-                                CallLogData d = parseCallLog(body);
-                                renderCallLogOnce(d, true);
-                            }
-                            break;
-                        }
-
-                        if (openPeer != null && openPeer.equals(sender)) {
-                            long msgId = 0L;
-                            try { msgId = Long.parseLong(String.valueOf(f.transferId)); } catch (Exception ignore) {}
-                            String msgIdStr = (msgId > 0 ? String.valueOf(msgId) : null);
-
-                            if (body.startsWith("[FILE]")) {
-                                String name = body.substring(6).trim();
-                                String meta = "";
-                                HBox row = controller.addFileMessage(name, meta, true, msgIdStr);
-                                if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                                    String key = String.valueOf(msgId);
-                                    if (markDownloadRequested(key)) {
-                                        try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-                                    }
-                                }
-                            } else if (body.startsWith("[AUDIO]")) {
-                                String dur = "--:--";
-                                HBox row = controller.addVoiceMessage(dur, true, msgIdStr);
-                                if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                                    String key = String.valueOf(msgId);
-                                    if (markDownloadRequested(key)) {
-                                        try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-                                    }
-                                }
-                            } else if (body.startsWith("[VIDEO]")) {
-                                String name = body.substring(7).trim();
-                                String meta = "";
-                                HBox row = controller.addVideoMessage(name, meta, true, msgIdStr);
-                                if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                                    String key = String.valueOf(msgId);
-                                    if (markDownloadRequested(key)) {
-                                        try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-                                    }
-                                }
-                            } else {
-                                controller.addTextMessage(body, true, f.transferId);
-                            }
-                        }
-                    }
-
-                } else if (line.startsWith("[HIST OUT]")) {
-                    String body = line.substring(10).trim();
-
-                    if (body.startsWith("[CALLLOG]")) {
-                        CallLogData d = parseCallLog(body);
-                        renderCallLogOnce(d, false);
-                        break;
-                    }
-
-                    long msgId = 0L;
-                    try { msgId = Long.parseLong(String.valueOf(f.transferId)); } catch (Exception ignore) {}
-                    String msgIdStr = (msgId > 0 ? String.valueOf(msgId) : null);
-
-                    if (body.startsWith("[FILE]")) {
-                        String name = body.substring(6).trim();
-                        String meta = "";
-                        HBox row = controller.addFileMessage(name, meta, false, msgIdStr);
-                        if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                        if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                            String key = String.valueOf(msgId);
-                            if (markDownloadRequested(key)) {
-                                try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-                            }
-                        }
-                    } else if (body.startsWith("[AUDIO]")) {
-                        String dur = "--:--";
-                        HBox row = controller.addVoiceMessage(dur, false, msgIdStr);
-                        if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                        if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                            String key = String.valueOf(msgId);
-                            if (markDownloadRequested(key)) {
-                                try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-                            }
-                        }
-                    } else if (body.startsWith("[VIDEO]")) {
-                        String name = body.substring(7).trim();
-                        String meta = "";
-                        HBox row = controller.addVideoMessage(name, meta, false, msgIdStr);
-                        if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                        if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                            String key = String.valueOf(msgId);
-                            if (markDownloadRequested(key)) {
-                                try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-                            }
-                        }
-                    } else {
-                        controller.addTextMessage(body, false, f.transferId);
-                    }
-                }
-            }
-
-            // === FILE_EVT / AUDIO_EVT ===
-            case FILE_EVT, AUDIO_EVT -> {
-                String json = f.body == null ? "" : f.body;
-                String from     = UtilHandler.jsonGet(json, "from");
-                String name     = UtilHandler.jsonGet(json, "name");
-                String mime     = UtilHandler.jsonGet(json, "mime");
-                long   bytes    = UtilHandler.parseLongSafe(UtilHandler.jsonGet(json, "bytes"), 0);
-                int    duration = UtilHandler.parseIntSafe(UtilHandler.jsonGet(json, "duration"), 0);
-
-                String uuid   = UtilHandler.jsonGet(json, "uuid");
-                String legacy = UtilHandler.jsonGet(json, "id");
-                String dbIdStr= UtilHandler.jsonGet(json, "fileId");
-                Long   dbId   = null;
-                if (dbIdStr != null && !dbIdStr.isBlank()) { try { dbId = Long.parseLong(dbIdStr); } catch (Exception ignore) {} }
-
-                String bubbleKey = (legacy != null && !legacy.isBlank()) ? legacy : (uuid != null && !uuid.isBlank() ? uuid : null);
-
-                if (bubbleKey != null && name != null) controller.getFileIdToName().put(bubbleKey, name);
-                if (bubbleKey != null && mime != null && !mime.isBlank()) controller.getFileIdToMime().put(bubbleKey, mime);
-                if (dbId != null && dbId > 0) {
-                    String dbKey = String.valueOf(dbId);
-                    if (name != null) controller.getFileIdToName().put(dbKey, name);
-                    if (mime != null && !mime.isBlank()) controller.getFileIdToMime().put(dbKey, mime);
-                }
-
-                if (openPeer != null && openPeer.equals(from)) {
-                    String displayKey = (dbId != null && dbId > 0) ? String.valueOf(dbId) : (bubbleKey != null ? bubbleKey : "");
-                    UtilHandler.MediaKind kind = UtilHandler.classifyMedia(mime, name);
-                    String sizeOnly = (bytes > 0) ? UtilHandler.humanBytes(bytes) : "";
-                    HBox row;
-                    switch (kind) {
-                        case IMAGE -> { Image img = new WritableImage(8, 8); row = controller.addImageMessage(img, name + (sizeOnly.isBlank() ? "" : " • " + sizeOnly), true); }
-                        case AUDIO -> { String dur = (duration > 0) ? UtilHandler.formatDuration(duration) : "--:--"; row = controller.addVoiceMessage(dur, true, null); }
-                        case VIDEO -> { row = controller.addVideoMessage(name, sizeOnly, true, null); }
-                        default -> { row = controller.addFileMessage(name, sizeOnly, true, null); }
-                    }
-                    if (!displayKey.isEmpty()) row.getProperties().put("fid", displayKey);
-                    String msgIdStr0 = UtilHandler.jsonGet(json, "messageId");
-                    if (msgIdStr0 != null && !msgIdStr0.isBlank()) {
-                        controller.getFileIdToMsgId().put(displayKey, msgIdStr0);
-                        try { Long.parseLong(msgIdStr0); row.setUserData(msgIdStr0); } catch (Exception ignore) {}
-                    }
-
-                    if (controller.getConnection() != null && controller.getConnection().isAlive()) {
-                        Long msgId = null;
-                        String msgIdS = UtilHandler.jsonGet(json, "messageId");
-                        if (msgIdS != null && !msgIdS.isBlank()) { try { msgId = Long.parseLong(msgIdS); } catch (Exception ignore) {} }
-                        try {
-                            if (dbId != null && dbId > 0) controller.getConnection().downloadFileByFileId(dbId);
-                            else if (msgId != null && msgId > 0) controller.getConnection().downloadFileByMsgId(msgId);
-                            else if (bubbleKey != null) controller.getConnection().downloadFileLegacy(bubbleKey);
-                        } catch (IOException e) { System.err.println("[DL] request failed: " + e.getMessage()); }
-                    }
-                } else {
-                    controller.getPendingFileEvents().computeIfAbsent(from, k -> new ArrayList<>()).add(f);
-                }
-            }
-
-            // === FILE_META ===
-            case FILE_META -> {
-                String body = (f.body == null) ? "" : f.body;
-
-                // server có thể trả "fileId" (fid/uuid), "messageId" (MID số), "name", "mime", "size|bytes"
-                String fid       = UtilHandler.jsonGet(body, "fileId");
-                String msgIdStr  = UtilHandler.jsonGet(body, "messageId");
-                String name      = UtilHandler.jsonGet(body, "name");
-                String mime      = UtilHandler.jsonGet(body, "mime");
-                long   metaSize  = UtilHandler.parseLongSafe(UtilHandler.jsonGet(body, "size"), 0);
-                if (metaSize <= 0) metaSize = UtilHandler.parseLongSafe(UtilHandler.jsonGet(body, "bytes"), 0);
-                final long sizeHint = metaSize;
-
-                if (fid == null || fid.isBlank()) break; // thiếu fid thì bỏ
-
-                // Lưu map phụ để các nơi khác có thể resolve
-                if (msgIdStr != null && !msgIdStr.isBlank()) {
-                    controller.getFileIdToMsgId().put(fid, msgIdStr);
-
-                    // Nếu row của lịch sử được tạo tạm bằng MID số, gán lại 'fid' cho đúng
-                    HBox rowByHist = controller.getPendingHistoryFileRows().remove(msgIdStr);
-                    if (rowByHist != null) {
-                        rowByHist.getProperties().put("fid", fid);
-                    }
-
-                    // Nếu row hiện tại đang dùng fid (UUID) chưa có MID, gán MID vào userData
-                    boolean tagged = false;
-                    try {
-                        Long.parseLong(msgIdStr); // hợp lệ MID số
-                        HBox row = controller.findRowByFid(fid);
-                        if (row != null) {
-                            Object ud = row.getUserData();
-                            boolean hasNumeric = false;
-                            if (ud != null) {
-                                try { Long.parseLong(String.valueOf(ud)); hasNumeric = true; } catch (Exception ignore) {}
-                            }
-                            if (!hasNumeric) { // chưa có MID -> gắn luôn
-                                row.setUserData(msgIdStr);
-                                tagged = true;
-                            }
-                        }
-                    } catch (Exception ignore) {}
-
-                    // Nếu vẫn chưa tag được, rà lùi từ cuối container: tìm bubble outgoing chưa có MID -> gắn
-                    if (!tagged) {
-                        var mc = controller.getMessageContainer();
-                        if (mc != null && !mc.getChildren().isEmpty()) {
-                            for (int i = mc.getChildren().size() - 1; i >= 0; i--) {
-                                var n = mc.getChildren().get(i);
-                                if (n instanceof HBox h) {
-                                    Object ud = h.getUserData();
-                                    boolean hasNumeric = false;
-                                    if (ud != null) {
-                                        try { Long.parseLong(String.valueOf(ud)); hasNumeric = true; } catch (Exception ignore) {}
-                                    }
-                                    if (hasNumeric) continue;
-
-                                    javafx.scene.Node b = h.getChildren().isEmpty()
-                                            ? null
-                                            : h.getChildren().get(h.getChildren().size() - 1);
-                                    if (b instanceof javafx.scene.layout.VBox vb) {
-                                        String bid = vb.getId();
-                                        if (bid != null && bid.startsWith("outgoing-")) {
-                                            h.setUserData(msgIdStr);
-                                            h.getProperties().put("fid", fid);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                try {
-                    if (msgIdStr != null && !msgIdStr.isBlank()) {
-                        String midKey = "MID_" + msgIdStr;
-
-                        // Nếu UI đã mở stream theo midKey (do user chọn vị trí lưu trước khi biết fid)
-                        BufferedOutputStream bosOld = controller.getDlOut().remove(midKey);
-                        File destOld = controller.getDlPath().remove(midKey);
-
-                        if (bosOld != null && destOld != null) {
-                            // Gắn về key thật = fid
-                            controller.getDlOut().put(fid, bosOld);
-                            controller.getDlPath().put(fid, destOld);
-                            System.out.println("[DLSAVE] REBIND stream from " + midKey + " -> " + fid + " dest=" + destOld.getAbsolutePath());
-
-                            // Nếu row lịch sử/bubble nào còn đang gắn fid=midKey thì đổi sang fid thật
-                            HBox rByMidKey = controller.findRowByFid(midKey);
-                            if (rByMidKey != null) {
-                                rByMidKey.getProperties().put("fid", fid);
-                                // Cờ 'saveToChosen' vẫn giữ nguyên trên row
-                                System.out.println("[DLSAVE] REBIND row fid property from " + midKey + " -> " + fid);
-                            }
-                        }
-                    }
-                } catch (Exception rebindEx) {
-                    System.out.println("[DLSAVE] REBIND failed ex=" + rebindEx);
-                }
-
-                // Lưu size/mime/name để các UI refresher dùng
-                if (sizeHint > 0) controller.getFileIdToSize().put(fid, sizeHint);
-                if (mime == null || mime.isBlank()) mime = "application/octet-stream";
-                controller.getFileIdToMime().put(fid, mime);
-                if (name != null && !name.isBlank()) controller.getFileIdToName().put(fid, name);
-
-                // Chuẩn bị file tạm để nhận CHUNK
-                try {
-                    BufferedOutputStream existed = controller.getDlOut().get(fid);
-                    File existedFile = controller.getDlPath().get(fid);
-
-                    if (existed != null && existedFile != null) {
-                        System.out.println("[DLSAVE] FILE_META reuse existing dest=" + existedFile.getAbsolutePath());
-                        // Không làm gì: đã có stream/file đích
-                    } else {
-                        String ext = UtilHandler.guessExt(mime, controller.getFileIdToName().get(fid));
-                        File tmp = File.createTempFile("im_", "_" + fid + (ext == null ? "" : ext));
-                        BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(tmp));
-                        controller.getDlPath().put(fid, tmp);
-                        controller.getDlOut().put(fid, bos);
-                        System.out.println("[DLSAVE] FILE_META create temp=" + tmp.getAbsolutePath());
-                    }
-                } catch (Exception ex) {
-                    System.out.println("[DLSAVE] FILE_META prepare dest failed ex=" + ex);
-                }
-
-                // Cập nhật lại UI: file thường/ảnh/video
-                UtilHandler.MediaKind kind = UtilHandler.classifyMedia(
-                        mime, controller.getFileIdToName().get(fid));
-
-                switch (kind) {
-                    case FILE -> Platform.runLater(() -> {
-                        HBox row = controller.findRowByFid(fid);
-                        if (row != null && controller.getMediaHandler() != null) {
-                            // cập nhật label tên/kích thước cho bubble file
-                            controller.getMediaHandler().updateGenericFileMeta(row, fid, sizeHint);
-                        }
-                    });
-                    case IMAGE -> { // ảnh chỉ có ImageView, caption sẽ cập nhật bằng tên + mime + size
-                        refreshImageCaption(fid, sizeHint);
-                    }
-                    case VIDEO -> { // video: cập nhật label name/meta trong "videoControls"
-                        refreshVideoLabels(fid, sizeHint);
-                    }
-                    default -> { /* AUDIO/meta khác sẽ cập nhật sau khi nhận xong FILE_CHUNK */ }
-                }
-            }
-
-            // === FILE_CHUNK ===
-            case FILE_CHUNK -> {
-                String fid = f.transferId;
-                byte[] data = (f.bin == null) ? new byte[0] : f.bin;
-                BufferedOutputStream bos = controller.getDlOut().get(fid);
-                if (bos != null) {
-                    try { if (data.length > 0) bos.write(data); } catch (IOException e) { System.err.println("[DL] write failed: " + e.getMessage()); }
-                    if (f.last) {
-                        try { bos.flush(); bos.close(); } catch (Exception ignore) {}
-                        controller.getDlOut().remove(fid);
-                        File file = controller.getDlPath().remove(fid);
-                        if (file != null) {
-                            Platform.runLater(() -> {
-                                HBox row = controller.findRowByFid(fid);
-                                if (row == null) return;
-                                String mime = controller.getFileIdToMime().getOrDefault(fid, "application/octet-stream");
-                                UtilHandler.MediaKind kind = UtilHandler.classifyMedia(mime, controller.getFileIdToName().get(fid));
-                                String fileUrl = file.toURI().toString();
-                                try {
-                                    switch (kind) {
-                                        case AUDIO -> controller.getMediaHandler().updateVoiceBubbleFromUrl(row, fileUrl);
-                                        case VIDEO -> { controller.getMediaHandler().updateVideoBubbleFromUrl(row, fileUrl); refreshVideoLabels(fid, file.length()); }
-                                        case IMAGE -> { controller.getMediaHandler().updateImageBubbleFromUrl(row, fileUrl); refreshImageCaption(fid, file.length()); }
-                                        default -> controller.getMediaHandler().updateGenericFileMetaByFid(fid);
-                                    }
-                                } catch (Exception ex) {}
-                                try {
-                                    boolean shouldOpen = false;
-                                    if (row != null) {
-                                        Object flag = row.getProperties().get("saveToChosen");
-                                        shouldOpen = (flag instanceof Boolean b && b);
-                                        if (shouldOpen) row.getProperties().remove("saveToChosen");
-                                    }
-                                    if (shouldOpen) {
-                                        System.out.println("[DLSAVE] open folder after done: " + file.getAbsolutePath());
-                                        try {
-                                            java.awt.Desktop.getDesktop().open(file.getParentFile());
-                                        } catch (Exception ex2) {
-                                            System.out.println("[DLSAVE] open folder failed ex=" + ex2);
-                                        }
-                                    }
-                                } catch (Exception ignore) {}
-                            });
-                        }
-                    }
-                }
-            }
-
-            // === DELETE & EDIT ===
-            case DELETE_MSG -> {
-                String id = f.transferId;
-                if (id != null) {
-                    Platform.runLater(() -> controller.removeMessageById(id));
-                }
-            }
-            case EDIT_MSG -> {
-                String id = f.transferId;
-                String newBody = (f.body == null) ? "" : f.body;
-                if (id != null) {
-                    Platform.runLater(() -> controller.updateTextBubbleById(id, newBody));
-                }
-            }
-
-            // === ACK / ERROR ===
-            case ACK -> {
-                String body = (f.body == null) ? "" : f.body;
-
-                // 1) Giữ nhánh cũ
-                if (f.transferId != null && (body.startsWith("OK DM") || body.startsWith("OK QUEUED"))) {
-                    controller.tagNextPendingOutgoing(f.transferId);
-                    break;
-                }
-
-                // 2) NHÁNH MỚI: ACK khi upload file xong
-                if (body.contains("\"status\"") && body.contains("FILE_SAVED")) {
-                    // server set transferId = uuid gốc khi gửi
-                    String uuid = f.transferId;
-
-                    String msgIdStr = UtilHandler.jsonGet(body, "messageId");
-                    String fileIdStr = UtilHandler.jsonGet(body, "fileId");
-                    String bytesStr  = UtilHandler.jsonGet(body, "bytes");
-                    String mime      = UtilHandler.jsonGet(body, "mime");
-
-                    Long msgId = null, fileId = null, bytes = null;
-                    try { if (msgIdStr  != null) msgId  = Long.parseLong(msgIdStr); } catch (Exception ignore) {}
-                    try { if (fileIdStr != null) fileId = Long.parseLong(fileIdStr);} catch (Exception ignore) {}
-                    try { if (bytesStr  != null) bytes  = Long.parseLong(bytesStr);} catch (Exception ignore) {}
-
-                    // Tìm bubble outgoing bạn vừa tạo bằng fid=uuid
-                    HBox row = (uuid != null) ? controller.findRowByFid(uuid) : null;
-                    if (row == null && uuid != null) {
-                        row = controller.getOutgoingFileBubbles().get(uuid);
-                    }
-                    if (row != null) {
-                        // Cập nhật định danh chuẩn cho row
-                        if (fileId != null) {
-                            row.getProperties().put("fid", String.valueOf(fileId));
-                        }
-                        if (msgId != null) {
-                            row.setUserData(String.valueOf(msgId));
-                        }
-
-                        // Lưu map để các chỗ khác resolve
-                        if (fileId != null && msgId != null) {
-                            controller.getFileIdToMsgId().put(String.valueOf(fileId), String.valueOf(msgId));
-                        }
-                        if (mime != null && !mime.isBlank()) {
-                            controller.getFileIdToMime().put(String.valueOf(fileId), mime);
-                        }
-                        if (bytes != null && bytes >= 0) {
-                            controller.getFileIdToSize().put(String.valueOf(fileId), bytes);
-                        }
-
-                        // Đổi key trong outgoingFileBubbles: uuid -> fileId (nếu có)
-                        if (uuid != null && fileId != null) {
-                            controller.getOutgoingFileBubbles().remove(uuid);
-                            controller.getOutgoingFileBubbles().put(String.valueOf(fileId), row);
-                        }
-                    }
-
-                    // Quan trọng: CHỦ ĐỘNG tải về để cập nhật duration/thumbnail
-                    if (controller.getConnection() != null && controller.getConnection().isAlive() && fileId != null) {
-                        try { controller.getConnection().downloadFileByFileId(fileId); } catch (IOException ignore) {}
-                    }
-
-                    break;
-                }
-            }
-
-            case ERROR -> Platform.runLater(() -> controller.showErrorAlert("Lỗi: " + f.body));
-        }
     }
 
     // === SEND TEXT ===
@@ -634,8 +666,12 @@ public class MessageHandler {
     private static final class CallLogData {
         final String icon, title, subtitle, callId, caller, callee;
         CallLogData(String icon, String title, String subtitle, String callId, String caller, String callee) {
-            this.icon = icon; this.title = title; this.subtitle = subtitle;
-            this.callId = callId; this.caller = caller; this.callee = callee;
+            this.icon = icon;
+            this.title = title;
+            this.subtitle = subtitle;
+            this.callId = callId;
+            this.caller = caller;
+            this.callee = callee;
         }
     }
 
@@ -644,12 +680,12 @@ public class MessageHandler {
             int i = body.indexOf('{');
             if (!body.startsWith("[CALLLOG]") || i < 0) return null;
             String json = body.substring(i);
-            String icon     = UtilHandler.jsonGet(json, "icon");
-            String title    = UtilHandler.jsonGet(json, "title");
+            String icon = UtilHandler.jsonGet(json, "icon");
+            String title = UtilHandler.jsonGet(json, "title");
             String subtitle = UtilHandler.jsonGet(json, "subtitle");
-            String callId   = UtilHandler.jsonGet(json, "callId");
-            String caller   = UtilHandler.jsonGet(json, "caller");
-            String callee   = UtilHandler.jsonGet(json, "callee");
+            String callId = UtilHandler.jsonGet(json, "callId");
+            String caller = UtilHandler.jsonGet(json, "caller");
+            String callee = UtilHandler.jsonGet(json, "callee");
             if (title == null) title = "";
             if (subtitle == null) subtitle = "";
             if (icon == null || icon.isBlank()) icon = "🎥";
@@ -663,7 +699,7 @@ public class MessageHandler {
         String me = (controller.getCurrentUser() != null)
                 ? controller.getCurrentUser().getUsername() : null;
         if (me == null) return true;
-        if (d == null)  return true;
+        if (d == null) return true;
 
         if (d.caller != null && !d.caller.isBlank()) {
             return !me.equals(d.caller);
@@ -677,13 +713,11 @@ public class MessageHandler {
     private void renderCallLogOnce(CallLogData d, boolean defaultIncoming) {
         if (d == null) return;
         if (d.callId != null && !d.callId.isBlank()) {
-            if (!renderedCallLogIds.add(d.callId)) return;
+            if (!controller.markCallLogShownOnce(d.callId)) return;
         }
         boolean incoming = (d.caller != null || d.callee != null)
                 ? isIncomingForThisClient(d)
                 : defaultIncoming;
         controller.addCallLog(d.icon, d.title, d.subtitle, incoming);
     }
-    
-    
 }

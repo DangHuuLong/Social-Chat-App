@@ -91,6 +91,30 @@ public class FileDao {
             }
         }
     }
+    
+    public List<FileRecord> listByUserAndPeer(String user, String peer, int limit, int offset) throws SQLException {
+        String sql = """
+            SELECT f.*
+            FROM files f
+            JOIN messages m ON f.message_id = m.id
+            WHERE (m.sender = ? AND m.recipient = ?) OR (m.sender = ? AND m.recipient = ?)
+            ORDER BY f.uploaded_at DESC
+            LIMIT ? OFFSET ?
+        """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, user);
+            ps.setString(2, peer);
+            ps.setString(3, peer);
+            ps.setString(4, user);
+            ps.setInt(5, Math.max(1, limit));
+            ps.setInt(6, Math.max(0, offset));
+            try (ResultSet rs = ps.executeQuery()) {
+                List<FileRecord> list = new ArrayList<>();
+                while (rs.next()) list.add(mapRow(rs));
+                return list;
+            }
+        }
+    }
 
     /** Xoá theo message_id (trong DB) */
     public boolean deleteByMessageId(long messageId) throws SQLException {

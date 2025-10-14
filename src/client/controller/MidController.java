@@ -16,6 +16,8 @@ import common.Frame;
 import common.User;
 import javafx.application.Platform;
 import javafx.beans.value.ChangeListener;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableMap;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
@@ -82,7 +84,6 @@ public class MidController implements CallSignalListener {
     public final Map<String, HBox> outgoingFileBubbles = new ConcurrentHashMap<>();
 
     private final Map<String, BufferedOutputStream> dlOut = new ConcurrentHashMap<>();
-    private final Map<String, File> dlPath = new ConcurrentHashMap<>();
 
     private final VoiceRecordHandler voiceRecordHandler = new VoiceRecordHandler();
     
@@ -101,7 +102,12 @@ public class MidController implements CallSignalListener {
     
     public java.util.Map<String,String> getFileIdToMsgId() { return fileIdToMsgId; }
     public Map<String, Long> getFileIdToSize() { return fileIdToSize; }
-    
+    private final ObservableMap<String, File> dlPath = FXCollections.observableHashMap();
+    private final ObservableMap<String, File> downloadedFiles = FXCollections.observableHashMap(); 
+    public ObservableMap<String, File> getDlPath() { return dlPath; }
+    public ObservableMap<String, File> getDownloadedFiles() {
+        return downloadedFiles;
+    }
 	public MediaHandler getMediaHandler() {
 		return mediaHandler;
 	}
@@ -127,6 +133,21 @@ public class MidController implements CallSignalListener {
                 f -> Platform.runLater(() -> handleServerFrame(f)),
                 err -> System.err.println("[NET] Disconnected: " + err)
             );
+        }
+    }
+    
+    public void onDownloadCompleted(String fid, File completedFile) {
+        if (fid == null || fid.isBlank() || completedFile == null) return;
+
+        downloadedFiles.put(fid, completedFile);
+
+        if (connection != null) {
+            try {
+                long id = Long.parseLong(fid);      // only works for numeric fids
+                connection.markDownloadDone(id);
+            } catch (NumberFormatException ignore) {
+                // non-numeric (uuid/legacy) -> nothing to do unless you add a String overload
+            }
         }
     }
     
@@ -185,7 +206,7 @@ public class MidController implements CallSignalListener {
             }
             messageContainer.getChildren().clear();
         }
-
+        shownCallLogs.clear();
         messageSnapshot.clear(); 
 
         enableAutoScroll();
@@ -524,7 +545,6 @@ public class MidController implements CallSignalListener {
     public Map<String, String> getFileIdToMime() { return fileIdToMime; }
     public Map<String, HBox> getOutgoingFileBubbles() { return outgoingFileBubbles; }
     public Map<String, BufferedOutputStream> getDlOut() { return dlOut; }
-    public Map<String, File> getDlPath() { return dlPath; }
 
     public void setCallStage(Stage callStage) { this.callStage = callStage; }
     public void setCallCtrl(VideoCallController callCtrl) { this.callCtrl = callCtrl; }

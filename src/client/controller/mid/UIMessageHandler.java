@@ -345,22 +345,6 @@ public class UIMessageHandler {
         try { Long.parseLong(s); return true; } catch (Exception ignore){ return false; }
     }
 
-    private void openContainingFolder(File file){
-        if (file == null) return;
-        try {
-            File dir = file.getParentFile();
-            if (dir == null) dir = file;
-            System.out.println("[DLSAVE] open folder=" + dir.getAbsolutePath());
-            if (Desktop.isDesktopSupported()) {
-                Desktop.getDesktop().open(dir);
-            }
-        } catch (Exception ex){
-            System.out.println("[DLSAVE] open folder failed ex=" + ex);
-            controller.showErrorAlert("Không mở được thư mục: " + ex.getMessage());
-        }
-    }
-
-
     private HBox addRowWithBubble(Node bubble, boolean incoming, String messageId) {
         if (controller.getMessageContainer().getChildren().size() > 100) {
             controller.getMessageContainer().getChildren().remove(0);
