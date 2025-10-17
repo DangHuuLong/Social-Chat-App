@@ -19,6 +19,9 @@ import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 
+import javax.swing.JDialog;
+import javax.swing.JOptionPane;
+
 import client.controller.MidController;
 
 public class UIMessageHandler {
@@ -74,6 +77,9 @@ public class UIMessageHandler {
         miDownload.getStyleClass().add("msg-context-item");
         cm.getItems().add(new SeparatorMenuItem());
         cm.getItems().add(miDownload);
+        MenuItem miReply = new MenuItem("Trả lời");
+        miReply.getStyleClass().add("msg-context-item");
+        cm.getItems().add(miReply);
 
         Node bubble = null;
         if (incoming) {
@@ -246,6 +252,10 @@ public class UIMessageHandler {
                 controller.showErrorAlert("Tải xuống thất bại: " + ex.getMessage());
             }
         });
+        
+        miReply.setOnAction(e -> {
+            controller.showReplyPreview(row, incoming);
+        });
 
         cm.setOnShowing(e -> {
             Node b = null;
@@ -375,7 +385,13 @@ public class UIMessageHandler {
         lbl.setWrapText(true);
         bubble.getChildren().add(lbl);
 
-        return addRowWithBubble(bubble, incoming, messageId);
+        HBox row = addRowWithBubble(bubble, incoming, messageId);
+        if (controller.hasReplyContext()) {
+            VBox chip = buildReplyChipForCurrentContext(row, incoming);
+            if (chip != null && bubble instanceof VBox vb) vb.getChildren().add(0, chip);
+            controller.clearReplyPreview();
+        }
+        return row;
     }
 
     /* IMAGE: chỉ ImageView, không label */
@@ -388,7 +404,13 @@ public class UIMessageHandler {
         iv.setPreserveRatio(true);
 
         box.getChildren().add(iv);
-        return addRowWithBubble(box, incoming, messageId);
+        HBox row = addRowWithBubble(box, incoming, messageId);
+        if (controller.hasReplyContext()) {
+            VBox chip = buildReplyChipForCurrentContext(row, incoming);
+            if (chip != null) box.getChildren().add(0, chip);
+            controller.clearReplyPreview();
+        }
+        return row;
     }
 
     /* FILE: chỉ tên + kích thước (lọc MIME) */
@@ -456,6 +478,11 @@ public class UIMessageHandler {
             Platform.runLater(() -> controller.getMediaHandler().updateGenericFileMetaByFid(messageId));
         }
 
+        if (controller.hasReplyContext()) {
+            VBox chip = buildReplyChipForCurrentContext(row, incoming);
+            if (chip != null) box.getChildren().add(0, chip);
+            controller.clearReplyPreview();
+        }
         return row;
     }
 
@@ -499,6 +526,21 @@ public class UIMessageHandler {
         controller.getMessageContainer().getChildren().add(row);
         if (!incoming && fileId != null) {
             controller.getOutgoingFileBubbles().put(fileId, row);
+        }
+        if (controller.hasReplyContext()) {
+            VBox chip = buildReplyChipForCurrentContext(row, incoming);
+            if (chip != null) {
+                // voice là HBox; ta quấn chip + voiceBox trong VBox cho gọn
+                VBox wrapper = new VBox(6);
+                wrapper.setId(voiceBox.getId()); // giữ id để CSS áp dụng như cũ
+                voiceBox.setId(null);
+                wrapper.getChildren().addAll(chip, voiceBox);
+
+                // thay bubble trong row
+                int idx = incoming ? 0 : row.getChildren().size()-1;
+                row.getChildren().set(idx, wrapper);
+            }
+            controller.clearReplyPreview();
         }
         return row;
     }
@@ -545,6 +587,18 @@ public class UIMessageHandler {
         controller.getMessageContainer().getChildren().add(row);
         if (!incoming && fileId != null) {
             controller.getOutgoingFileBubbles().put(fileId, row);
+        }
+        if (controller.hasReplyContext()) {
+            VBox chip = buildReplyChipForCurrentContext(row, incoming);
+            if (chip != null) {
+                VBox wrapper = new VBox(6);
+                wrapper.setId(box.getId());
+                box.setId(null);
+                wrapper.getChildren().addAll(chip, box);
+                int idx = incoming ? 0 : row.getChildren().size()-1;
+                row.getChildren().set(idx, wrapper);
+            }
+            controller.clearReplyPreview();
         }
         return row;
     }
@@ -608,4 +662,74 @@ public class UIMessageHandler {
 
         return addRowWithBubble(box, incoming, (String) null);
     }
+    
+    private VBox buildReplyChipForCurrentContext(HBox newMsgRow, boolean newMsgIncoming) {
+        // lấy nguồn đang được reply
+        HBox srcRow = controller.getReplyingRow();
+        if (srcRow == null) return null;
+
+        boolean srcIncoming = controller.isReplyingIncoming();
+
+        // Lấy bubble nguồn để trích nội dung/loại
+        Node srcBubble = srcIncoming ? srcRow.getChildren().get(0)
+                                     : srcRow.getChildren().get(srcRow.getChildren().size()-1);
+        String srcId = (srcBubble instanceof Region r) ? r.getId() : null;
+
+        // Tạo title & snippet
+        String title;
+        if (!srcIncoming) {
+            // trả lời tin nhắn của chính mình
+            title = "Bạn đã trả lời chính mình";
+        } else {
+            // trả lời tin nhắn của đối phương
+            String peer = (controller.getSelectedUser() != null) ? controller.getSelectedUser().getUsername() : "đối phương";
+            title = "Bạn đã trả lời " + peer;
+        }
+
+        String snippet = "Tin nhắn";
+        if (srcId != null && srcId.endsWith("-text")) {
+            if (srcBubble instanceof VBox vb) {
+                for (Node n : vb.getChildren()) if (n instanceof Label l) { snippet = l.getText(); break; }
+            }
+        } else if (srcId != null && srcId.endsWith("-image")) {
+            snippet = "Ảnh";
+        } else if (srcId != null && srcId.endsWith("-file")) {
+            String name = null;
+            if (srcBubble instanceof VBox vb) {
+                for (Node c : vb.lookupAll("#fileNamePrimary")) if (c instanceof Label l) { name = l.getText(); break; }
+            }
+            snippet = (name != null && !name.isBlank()) ? name : "Tệp đính kèm";
+        } else if (srcId != null && srcId.endsWith("-video")) {
+            snippet = "Video";
+        } else if (srcId != null && srcId.endsWith("-voice")) {
+            snippet = "Tin nhắn thoại";
+        } else {
+            snippet = "Tin nhắn cuộc gọi";
+        }
+
+        if (snippet != null && snippet.length() > 140) snippet = snippet.substring(0, 140) + "…";
+
+        // dựng chip
+        VBox chip = new VBox(2);
+        chip.getStyleClass().add("reply-chip");
+
+        Label lbTitle = new Label("↪ " + title);
+        lbTitle.getStyleClass().add("reply-chip-title");
+
+        Label lbText = new Label(snippet == null ? "" : snippet);
+        lbText.setWrapText(true);
+        lbText.getStyleClass().add("reply-chip-text");
+
+        chip.getChildren().addAll(lbTitle, lbText);
+
+        // click để scroll đến nguồn
+        chip.setOnMouseClicked(ev -> controller.scrollToRow(srcRow));
+
+        // trỏ liên kết để dùng về sau (nếu cần)
+        Object srcMsgId = srcRow.getUserData();
+        if (srcMsgId != null) newMsgRow.getProperties().put("replyTo", String.valueOf(srcMsgId));
+
+        return chip;
+    }
+
 }

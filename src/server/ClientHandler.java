@@ -75,7 +75,7 @@ public class ClientHandler implements Runnable {
 
                     // HỢP NHẤT: FILE + AUDIO đều đi qua 2 type meta/chunk này
                     case FILE_META, FILE_CHUNK -> handleFile(f);
-                    case AUDIO_META, AUDIO_CHUNK -> handleFile(f); // tương thích ngược
+                    case AUDIO_META, AUDIO_CHUNK -> handleFile(f); 
 
                     case CALL_INVITE, CALL_ACCEPT, CALL_REJECT,
                          CALL_CANCEL, CALL_BUSY, CALL_END,

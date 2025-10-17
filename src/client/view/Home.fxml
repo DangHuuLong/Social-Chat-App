@@ -95,7 +95,45 @@
                                 </VBox>
                             </content>
                         </ScrollPane>
-        
+                        
+                     	<!-- REPLY PREVIEW BAR -->
+						<HBox fx:id="replyBar" spacing="8" alignment="CENTER_LEFT"
+						      visible="false" managed="false"
+						      styleClass="reply-bar">
+						    <children>
+						        <!-- viền trái nhỏ để nhấn mạnh -->
+						        <Region prefWidth="4" minWidth="4" maxWidth="4" styleClass="reply-accent"/>
+						
+						        <!-- thumbnail/icon + text -->
+						        <HBox spacing="8" alignment="CENTER_LEFT" HBox.hgrow="ALWAYS">
+						            <children>
+						                <!-- ảnh thu nhỏ nếu là image, còn nếu là file thì hiển thị 📄 -->
+						                <StackPane prefWidth="36" prefHeight="36" maxWidth="36" maxHeight="36"
+						                           styleClass="reply-thumb">
+						                    <children>
+						                        <ImageView fx:id="replyThumb" fitWidth="36" fitHeight="36" preserveRatio="true" visible="false" managed="false"/>
+						                        <Label fx:id="replyFileIcon" text="📄" style="-fx-font-size:18px;" visible="false" managed="false"/>
+						                    </children>
+						                </StackPane>
+						
+						                <VBox spacing="2" HBox.hgrow="ALWAYS">
+						                    <children>
+						                        <Label fx:id="replyTitle" text="Trả lời" styleClass="reply-title"/>
+						                        <Label fx:id="replyContent" text="" styleClass="reply-text" wrapText="true"/>
+						                    </children>
+						                </VBox>
+						            </children>
+						        </HBox>
+						
+						        <!-- nút đóng -->
+						        <Button fx:id="replyCloseBtn" text="✕" focusTraversable="false" styleClass="reply-close"/>
+						    </children>
+						    <padding>
+						        <Insets top="8" right="10" bottom="8" left="8"/>
+						    </padding>
+						</HBox>
+
+        				
                         <HBox spacing="8" styleClass="input-bar" alignment="CENTER_LEFT">
                             <children>
                                 <Button fx:id="micBtn"    text="🎤" styleClass="icon-btn" onAction="#onVoice"/>

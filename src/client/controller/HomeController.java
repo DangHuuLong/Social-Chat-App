@@ -80,6 +80,13 @@ public class HomeController {
     
     @FXML private HBox leftHeader;
     @FXML private Region leftHeaderSpacer;
+    
+    @FXML private HBox replyBar;
+    @FXML private ImageView replyThumb;
+    @FXML private Label replyFileIcon;
+    @FXML private Label replyTitle;
+    @FXML private Label replyContent;
+    @FXML private Button replyCloseBtn;
 
     private final LeftController leftCtrl = new LeftController();
     private final MidController midCtrl = new MidController();
@@ -101,6 +108,7 @@ public class HomeController {
         rightCtrl.bind(infoName, chatStatus, rightHeaderAvatar, mediaTabs, photoGrid, videoGrid, docList);
         rightCtrl.bindOverlay(overlayLayer, overlayContent, overlayDim, btnOverlayClose, btnOverlayDownload);
         midCtrl.bind(currentChatName, currentChatStatus, messageContainer, messageField, midHeaderAvatar);
+        midCtrl.bindReplyBar(replyBar, replyThumb, replyFileIcon, replyTitle, replyContent, replyCloseBtn);
 
         rightCtrl.setMidController(midCtrl);
         midCtrl.setRightController(rightCtrl);
