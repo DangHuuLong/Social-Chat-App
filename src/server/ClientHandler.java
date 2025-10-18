@@ -43,6 +43,8 @@ public class ClientHandler implements Runnable {
     // map uuid<->id để tải lại theo uuid phía client cũ
     private static final Map<String, Long> uuidToFileId = new ConcurrentHashMap<>();
     private static final Map<String, Long> uuidToMsgId  = new ConcurrentHashMap<>();
+    private static final String REPLY_TAG = "[REPLY:";
+    private Long upReplyTo;
 
     public ClientHandler(Socket socket,
                          Set<ClientHandler> clients,
@@ -128,22 +130,29 @@ public class ClientHandler implements Runnable {
     /* ================= DIRECT MESSAGE ================= */
     private void handleDirectMessage(Frame f) {
         String to = f.recipient;
-        if (to == null || to.isBlank()) {
-            sendFrame(Frame.error("BAD_DM"));
-            return;
-        }
+        if (to == null || to.isBlank()) { sendFrame(Frame.error("BAD_DM")); return; }
+
+        // Tách reply_to khỏi body (nếu có)
+        StringBuilder bodyBuf = new StringBuilder(f.body == null ? "" : f.body);
+        Long replyTo = extractReplyIdAndStrip(bodyBuf);
+        String cleanBody = bodyBuf.toString();
+
         try {
             long id;
             ClientHandler target = online.get(to);
             if (target != null) {
-                id = messageDao.saveSentReturnId(f);
-                f.transferId = String.valueOf(id);
-                target.sendFrame(f);
+                // Lưu bản gửi (đã strip prefix), kèm reply_to
+                id = messageDao.saveSentReturnId(f.sender, to, cleanBody, replyTo);
+                // Phát cho người nhận, thêm lại prefix để client render chip
+                Frame deliver = new Frame(MessageType.DM, f.sender, to, prependReplyTag(cleanBody, replyTo));
+                deliver.transferId = String.valueOf(id);
+                target.sendFrame(deliver);
+
                 Frame ack = Frame.ack("OK DM");
                 ack.transferId = String.valueOf(id);
                 sendFrame(ack);
             } else {
-                id = messageDao.saveQueuedReturnId(f);
+                id = messageDao.saveQueuedReturnId(f.sender, to, cleanBody, replyTo);
                 Frame ack = Frame.ack("OK QUEUED");
                 ack.transferId = String.valueOf(id);
                 sendFrame(ack);
@@ -201,12 +210,16 @@ public class ClientHandler implements Runnable {
         try { limit = Integer.parseInt(f.body); } catch (Exception ignore) {}
 
         try {
-            var rows = messageDao.loadConversation(username, peer, limit);
+            var rows = messageDao.loadConversationWithReply(username, peer, limit);
             for (var r : rows) {
                 boolean incoming = !r.sender.equals(username);
+                String plain = r.body == null ? "" : r.body;
+                String bodyWithReply = prependReplyTag(plain, r.replyTo);
+
                 String txt = incoming
-                        ? "[HIST IN] " + r.sender + ": " + r.body
-                        : "[HIST OUT] " + r.body;
+                        ? "[HIST IN] " + r.sender + ": " + bodyWithReply
+                        : "[HIST OUT] " + bodyWithReply;
+
                 Frame hist = new Frame(MessageType.HISTORY, r.sender, r.recipient, txt);
                 hist.transferId = String.valueOf(r.id);
                 sendFrame(hist);
@@ -222,7 +235,18 @@ public class ClientHandler implements Runnable {
         try {
             // --- META (FILE_META / AUDIO_META) ---
             if (f.type == MessageType.FILE_META || f.type == MessageType.AUDIO_META) {
+                // Cho phép prefix [REPLY:<id>] đứng TRƯỚC JSON, sẽ strip ra và lưu vào upReplyTo
                 String body = (f.body == null ? "" : f.body);
+                Long replyToParsed = null;
+                if (body.startsWith("[REPLY:")) {
+                    int end = body.indexOf(']');
+                    if (end > "[REPLY:".length()) {
+                        String num = body.substring("[REPLY:".length(), end);
+                        try { replyToParsed = Long.parseLong(num); } catch (NumberFormatException ignore) {}
+                        body = body.substring(end + 1); // bỏ prefix
+                    }
+                }
+
                 String to   = pickJson(body, "to");
                 String name = pickJson(body, "name");
                 String mime = pickJson(body, "mime");
@@ -234,7 +258,10 @@ public class ClientHandler implements Runnable {
                 if (mime == null || mime.isBlank()) mime = "application/octet-stream";
                 if (size > Frame.MAX_FILE_BYTES) throw new IOException("file too large");
 
+                // reset phiên trước (nếu có)
                 if (upOut != null) { try { upOut.close(); } catch (Exception ignore) {} }
+
+                // set state phiên upload
                 upFileId       = fid;
                 upToUser       = to;
                 upOrigName     = name;
@@ -242,6 +269,7 @@ public class ClientHandler implements Runnable {
                 upDeclaredSize = size;
                 upExpectedSeq  = 0;
                 upWritten      = 0L;
+                upReplyTo      = replyToParsed; // << quan trọng
 
                 if (!UPLOAD_DIR.exists()) UPLOAD_DIR.mkdirs();
                 File outFile = new File(UPLOAD_DIR, sanitizeFilename(fid));
@@ -250,11 +278,11 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-         // --- CHUNK (FILE_CHUNK / AUDIO_CHUNK) ---
+            // --- CHUNK (FILE_CHUNK / AUDIO_CHUNK) ---
             if (f.type == MessageType.FILE_CHUNK || f.type == MessageType.AUDIO_CHUNK) {
                 if (upOut == null || upFileId == null) throw new IOException("CHUNK without META");
-                if (!upFileId.equals(f.transferId)) throw new IOException("Mismatched fileId");
-                if (f.seq != upExpectedSeq) throw new IOException("Out-of-order chunk");
+                if (!upFileId.equals(f.transferId))     throw new IOException("Mismatched fileId");
+                if (f.seq != upExpectedSeq)             throw new IOException("Out-of-order chunk");
 
                 int len = (f.bin == null ? 0 : f.bin.length);
                 if (upWritten + len > Frame.MAX_FILE_BYTES) throw new IOException("File exceeds limit");
@@ -262,29 +290,43 @@ public class ClientHandler implements Runnable {
                 upExpectedSeq++;
 
                 if (f.last) {
+                    // đóng file
                     upOut.flush(); upOut.close(); upOut = null;
 
-                    long msgId = 0L;
+                    long msgId  = 0L;
                     long fileId = 0L;
 
                     try {
                         // 1) Tạo message text đại diện file và lấy messageId
-                        Frame fileMsg = new Frame(MessageType.DM, username, upToUser, "[FILE] " + upOrigName);
-                        msgId = messageDao.saveSentReturnId(fileMsg);
+                        //    LƯU Ý: lưu *không có* prefix [REPLY], thay vào đó truyền reply_to qua DAO
+                        String fileBody = "[FILE] " + upOrigName;
+
+                        // dùng overload mới có replyTo
+                        msgId = messageDao.saveSentReturnId(
+                                username,                // sender
+                                upToUser,                // recipient
+                                fileBody,                // body thuần
+                                upReplyTo                // reply_to (nullable)
+                        );
 
                         // 2) Lưu metadata file và lấy fileId
                         String filePath = new File(UPLOAD_DIR, sanitizeFilename(upFileId)).getAbsolutePath();
                         fileId = fileDao.save(msgId, upOrigName, filePath, upMime, upWritten);
-
+                        System.out.println("[FILE/SAVE] sender=" + username
+                                + " to=" + upToUser
+                                + " msgId=" + msgId
+                                + " fileId=" + fileId
+                                + " origName=" + upOrigName
+                                + " mime=" + upMime
+                                + " bytes=" + upWritten
+                                + " replyTo=" + upReplyTo);
                         if (fileId > 0) uuidToFileId.put(upFileId, fileId);
                         if (msgId  > 0) uuidToMsgId.put(upFileId, msgId);
                     } catch (SQLException sqle) {
                         System.err.println("[DB] Failed to save file metadata: " + sqle.getMessage());
                     }
 
-                    // 3) Gửi ACK cho client GỬI, có kèm messageId + fileId
-                    //    - giữ nguyên transferId = uuid để client cũ không vỡ
-                    //    - body dạng JSON dễ parse trên client
+                    // 3) Gửi ACK cho client GỬI: giữ nguyên transferId = uuid; body = JSON
                     String ackJson = "{"
                             + "\"status\":\"FILE_SAVED\","
                             + "\"messageId\":" + msgId + ","
@@ -292,12 +334,11 @@ public class ClientHandler implements Runnable {
                             + "\"bytes\":" + upWritten + ","
                             + "\"mime\":\"" + escJson(upMime) + "\""
                             + "}";
-
                     Frame ack = Frame.ack(ackJson);
-                    ack.transferId = upFileId; // uuid bên client
+                    ack.transferId = upFileId; // uuid
                     sendFrame(ack);
 
-                    // 4) Push sự kiện cho người nhận (giữ nguyên như cũ)
+                    // 4) Push sự kiện cho người nhận (realtime)
                     if (upToUser != null && !upToUser.isBlank()) {
                         ClientHandler target = online.get(upToUser);
                         if (target != null) {
@@ -309,26 +350,37 @@ public class ClientHandler implements Runnable {
                                     + "\"id\":\""   + escJson(upFileId) + "\","
                                     + "\"fileId\":" + fileId + ","
                                     + "\"messageId\":" + msgId + ","
+                                    + "\"replyTo\":" + (upReplyTo == null ? "null" : upReplyTo) + ","  // << thêm replyTo
                                     + "\"name\":\"" + escJson(savedName) + "\","
                                     + "\"mime\":\"" + escJson(upMime) + "\","
                                     + "\"bytes\":"  + upWritten
                                     + "}";
                             Frame evt = new Frame(MessageType.FILE_EVT, username, upToUser, json);
+                            System.out.println("[FILE/EVT] push to=" + upToUser
+                                    + " uuid=" + upFileId
+                                    + " fileId=" + fileId
+                                    + " messageId=" + msgId
+                                    + " replyTo=" + upReplyTo);
                             target.sendFrame(evt);
                         }
                     }
 
-                    // 5) Reset state
-                    upFileId = null; upToUser = null; upOrigName = null; upMime = null;
-                    upDeclaredSize = 0; upExpectedSeq = 0; upWritten = 0;
+                    // 5) Reset state phiên upload
+                    upFileId = null;
+                    upToUser = null;
+                    upOrigName = null;
+                    upMime = null;
+                    upDeclaredSize = 0;
+                    upExpectedSeq = 0;
+                    upWritten = 0;
+                    upReplyTo = null; // << reset
                 }
                 return;
             }
 
-
         } catch (IOException e) {
             try { if (upOut != null) upOut.close(); } catch (Exception ignore) {}
-            upOut = null; upFileId = null;
+            upOut = null; upFileId = null; upReplyTo = null;
             sendFrame(Frame.error("FILE_FAIL"));
         }
     }
@@ -337,14 +389,14 @@ public class ClientHandler implements Runnable {
     private void handleDownloadFile(Frame f) {
         try {
             String body = (f.body == null) ? "" : f.body.trim();
-
+            System.out.println("[DL] request body=" + body);
             Long fileId = null;
             Long messageId = null;
 
             String fileIdStr = jsonGet(body, "fileId");
             String msgIdStr  = jsonGet(body, "messageId");
             String legacyId  = jsonGet(body, "id"); // uuid cũ
-
+            
             if (fileIdStr != null && !fileIdStr.isBlank()) { try { fileId = Long.parseLong(fileIdStr); } catch (Exception ignore) {} }
             if (msgIdStr  != null && !msgIdStr.isBlank())  { try { messageId = Long.parseLong(msgIdStr); }  catch (Exception ignore) {} }
 
@@ -362,19 +414,39 @@ public class ClientHandler implements Runnable {
                 if (fileId == null && mappedFileId != null) fileId = mappedFileId;
                 if (messageId == null && mappedMsgId  != null) messageId = mappedMsgId;
             }
-
+            System.out.println("[DL] resolved fileId=" + fileId + " messageId=" + messageId + " legacyUuid=" + uuid);
             FileDao.FileRecord fileRow = null;
             if (fileId != null && fileId > 0) fileRow = fileDao.getById(fileId);
             if (fileRow == null && messageId != null && messageId > 0) fileRow = fileDao.getByMessageId(messageId);
 
-            if (fileRow == null) { sendFrame(Frame.error("INVALID_FILE_ID")); return; }
-
+            if (fileRow == null) { 
+            	System.out.println("[DL] fileRow=null (not found by fileId/messageId)");
+            	sendFrame(Frame.error("INVALID_FILE_ID")); 
+            	return; 
+            }
+            System.out.println("[DL] fileRow id=" + fileRow.id
+                    + " msgId=" + fileRow.messageId
+                    + " name=" + fileRow.fileName
+                    + " mime=" + fileRow.mimeType
+                    + " path=" + fileRow.filePath);
             File file = new File(fileRow.filePath);
             if (!file.exists()) { sendFrame(Frame.error("FILE_NOT_FOUND_DISK")); return; }
 
             String mime = (fileRow.mimeType != null) ? fileRow.mimeType : "application/octet-stream";
             String name = (fileRow.fileName  != null) ? fileRow.fileName  : ("file-" + fileRow.id);
+            
+            Long replyTo = null;
+            long msgIdForFile = fileRow.messageId;
+            try {
+                if (msgIdForFile > 0) {
+                    replyTo = messageDao.getReplyToByMessageId(msgIdForFile);
+                }
+                System.out.println("[DL] replyTo for messageId=" + msgIdForFile + " -> " + replyTo);
+            } catch (SQLException e) {
+                System.out.println("[DL] getReplyToByMessageId failed: " + e.getMessage());
+            }
 
+            
             String metaJson = "{"
                     + "\"from\":\"" + escJson(username) + "\","
                     + "\"to\":\"\","
@@ -382,8 +454,13 @@ public class ClientHandler implements Runnable {
                     + "\"mime\":\"" + escJson(mime) + "\","
                     + "\"fileId\":\"" + fileRow.id + "\","
                     + "\"messageId\":\"" + (fileRow.messageId) + "\","
+                    + "\"replyTo\":" + (replyTo == null ? "null" : replyTo) + "," 
                     + "\"size\":" + file.length()
                     + "}";
+            System.out.println("[DL] send FILE_META fileId=" + fileRow.id
+                    + " msgId=" + fileRow.messageId
+                    + " replyTo=" + replyTo
+                    + " size=" + file.length());
             sendFrame(new Frame(MessageType.FILE_META, username, "", metaJson));
 
             try (InputStream fis = new BufferedInputStream(new FileInputStream(file))) {
@@ -391,6 +468,7 @@ public class ClientHandler implements Runnable {
                 int n, seq = 0;
                 long rem = file.length();
                 while ((n = fis.read(buf)) != -1) {
+                	if (seq == 0) System.out.println("[DL] start streaming fileId=" + fileRow.id + " total=" + file.length());
                     rem -= n;
                     boolean last = (rem == 0);
                     byte[] slice = (n == buf.length) ? buf : Arrays.copyOf(buf, n);
@@ -400,6 +478,7 @@ public class ClientHandler implements Runnable {
                     ch.last = last;
                     ch.bin = slice;
                     sendFrame(ch);
+                    if (last) System.out.println("[DL] done streaming fileId=" + fileRow.id + " chunks=" + (seq));
                 }
             }
         } catch (SQLException e) {
@@ -583,4 +662,29 @@ public class ClientHandler implements Runnable {
         if (s == null || s.isBlank()) return def;
         try { return Long.parseLong(s); } catch (Exception e) { return def; }
     }
+    
+    /*HEPLER FOR REPLY*/
+    private static Long extractReplyIdAndStrip(StringBuilder bodyInOut) {
+        if (bodyInOut == null) return null;
+        String s = bodyInOut.toString();
+        if (s.startsWith(REPLY_TAG)) {
+            int end = s.indexOf(']');
+            if (end > REPLY_TAG.length()) {
+                String num = s.substring(REPLY_TAG.length(), end);
+                try {
+                    long id = Long.parseLong(num);
+                    bodyInOut.setLength(0);
+                    bodyInOut.append(s.substring(end + 1)); // strip tag
+                    return id;
+                } catch (NumberFormatException ignore) {}
+            }
+        }
+        return null;
+    }
+
+    private static String prependReplyTag(String body, Long replyTo) {
+        if (replyTo == null || replyTo <= 0) return body;
+        return "[REPLY:" + replyTo + "]" + (body == null ? "" : body);
+    }
+
 }

@@ -18,6 +18,8 @@ import java.awt.Desktop;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.swing.JDialog;
 import javax.swing.JOptionPane;
@@ -26,7 +28,6 @@ import client.controller.MidController;
 
 public class UIMessageHandler {
     private final MidController controller;
-
     public UIMessageHandler(MidController controller) {
         this.controller = controller;
     }
@@ -337,7 +338,171 @@ public class UIMessageHandler {
             System.out.println("[MENU] preset userData from param=" + messageId);
         }
     }
+    
+    /*REPLY*/
+    private VBox buildReplyChipForRowToRow(HBox srcRow, HBox newMsgRow, boolean newMsgIncoming) {
+        // Tạo chip giống buildReplyChipForCurrentContext nhưng nguồn là srcRow
+        Node srcBubble = (srcRow.getAlignment() == Pos.CENTER_LEFT)
+                ? srcRow.getChildren().get(0)
+                : srcRow.getChildren().get(srcRow.getChildren().size()-1);
+        String srcId = (srcBubble instanceof Region r) ? r.getId() : null;
 
+        String title = buildReplyTitleForRows(srcRow, newMsgRow);
+
+        String snippet = "Tin nhắn";
+        if (srcId != null && srcId.endsWith("-text")) {
+            if (srcBubble instanceof VBox vb) {
+                for (Node n : vb.getChildren()) if (n instanceof Label l) { snippet = l.getText(); break; }
+            }
+        } else if (srcId != null && srcId.endsWith("-image"))  snippet = "Ảnh";
+        else if (srcId != null && srcId.endsWith("-video"))    snippet = "Video";
+        else if (srcId != null && srcId.endsWith("-voice"))    snippet = "Tin nhắn thoại";
+        else if (srcId != null && srcId.endsWith("-file")) {
+            if (srcBubble instanceof VBox vb) {
+                for (Node c : vb.lookupAll("#fileNamePrimary")) if (c instanceof Label l) { snippet = l.getText(); break; }
+            }
+            if (snippet == null || snippet.isBlank()) snippet = "Tệp đính kèm";
+        } else snippet = "Tin nhắn";
+
+        if (snippet != null && snippet.length() > 140) snippet = snippet.substring(0,140) + "…";
+
+        VBox chip = new VBox(2);
+        chip.getStyleClass().add("reply-chip");
+        Label lbTitle = new Label("↪ " + title); lbTitle.getStyleClass().add("reply-chip-title");
+        Label lbText  = new Label(snippet == null ? "" : snippet);
+        lbText.setWrapText(true); lbText.getStyleClass().add("reply-chip-text");
+        chip.getChildren().addAll(lbTitle, lbText);
+
+        // click để scroll tới nguồn
+        chip.setOnMouseClicked(ev -> controller.scrollToRow(srcRow));
+
+        return chip;
+    }
+
+    public void attachReplyChipById(HBox newMsgRow, boolean newMsgIncoming, String replyToId) {
+        if (replyToId == null || replyToId.isBlank() || newMsgRow == null) return;
+
+        // Tìm nguồn (message bị reply)
+        HBox srcRow = controller.findRowByUserData(replyToId);
+        if (srcRow == null) {
+            // treo chờ tới khi message gốc render xong
+            controller.getPendingReplyLinks()
+                    .computeIfAbsent(replyToId, k -> new java.util.ArrayList<>())
+                    .add(newMsgRow);
+            return;
+        }
+
+        // Tìm/chuẩn hoá bubble đích (new message) – hỗ trợ mọi loại bubble
+        VBox targetBox = findBubbleBox(newMsgRow);
+        if (targetBox == null) return;
+
+        // Tránh gắn trùng
+        if (hasReplyChip(targetBox)) return;
+
+        // Build chip
+        VBox chip = buildReplyChipForRowToRow(srcRow, newMsgRow, newMsgIncoming);
+
+        // Gắn chip lên đầu bubble
+        targetBox.getChildren().add(0, chip);
+
+        // Lưu lại replyTo để có thể re-attach nếu bubble bị thay thế sau này
+        newMsgRow.getProperties().putIfAbsent("replyTo", replyToId);
+    }
+    
+    // ===== Reply title helpers =====
+    // Tìm VBox bubble (hoặc wrapper) để gắn chip, hỗ trợ mọi loại bubble
+    private VBox findBubbleBox(HBox row) {
+        if (row == null || row.getChildren().isEmpty()) return null;
+
+        Node bubble = (row.getAlignment()==Pos.CENTER_LEFT)
+                ? row.getChildren().get(0)
+                : row.getChildren().get(row.getChildren().size()-1);
+
+        // Nếu đã là VBox thì kiểm tra id
+        if (bubble instanceof VBox box) {
+            String id = box.getId();
+            if (id == null) return null;
+            if (id.endsWith("-text") || id.endsWith("-file") ||
+                id.endsWith("-image") || id.endsWith("-video") ||
+                id.endsWith("-voice")) {
+                return box;
+            }
+            // Trường hợp là wrapper không có id, vẫn dùng được
+            return box;
+        }
+
+        // Với voice hoặc video ban đầu là HBox -> chưa có wrapper
+        if (bubble instanceof HBox hb) {
+            // Tạo wrapper để chứa chip + HBox gốc
+            VBox wrapper = new VBox(6);
+            // giữ nguyên id để CSS hoạt động như cũ
+            if (hb.getId() != null) { 
+                wrapper.setId(hb.getId()); 
+                hb.setId(null);
+            }
+            int idx = (row.getAlignment()==Pos.CENTER_LEFT) ? 0 : row.getChildren().size()-1;
+            wrapper.getChildren().add(hb);
+            row.getChildren().set(idx, wrapper);
+            return wrapper;
+        }
+
+        return null;
+    }
+
+    // Kiểm tra đã có chip hay chưa (tránh duplicate)
+    private boolean hasReplyChip(VBox bubbleBox) {
+        if (bubbleBox == null) return false;
+        for (Node n : bubbleBox.getChildren()) {
+            if (n instanceof VBox vb && vb.getStyleClass().contains("reply-chip")) return true;
+        }
+        return false;
+    }
+
+    private String peerName() {
+        return (controller.getSelectedUser() != null && controller.getSelectedUser().getUsername() != null)
+                ? controller.getSelectedUser().getUsername()
+                : "đối phương";
+    }
+
+    /** 
+     * Tạo title theo góc nhìn người xem:
+     * - actorIsViewer: người trả lời có phải "tôi" (viewer) không
+     * - sourceIsViewer: tin nhắn được trả lời có phải của "tôi" không
+     */
+    private String buildReplyTitle(boolean actorIsViewer, boolean sourceIsViewer) {
+        String actorPhrase  = actorIsViewer  ? "Bạn" : peerName();
+        String sourcePhrase;
+        if (actorIsViewer == sourceIsViewer) {
+            // cùng phía -> trả lời chính mình
+            sourcePhrase = "tin nhắn chính mình";
+        } else if (sourceIsViewer) {
+            sourcePhrase = "tin nhắn của bạn";
+        } else {
+            sourcePhrase = peerName();
+        }
+        return actorPhrase + " đã trả lời " + sourcePhrase;
+    }
+
+    /** Dựa trên alignment của 2 hàng để biết actor/source có phải viewer không */
+    private String buildReplyTitleForRows(HBox srcRow, HBox newMsgRow) {
+        boolean actorIsViewer  = (newMsgRow.getAlignment() == Pos.CENTER_RIGHT); // outgoing từ viewer
+        boolean sourceIsViewer = (srcRow.getAlignment()    == Pos.CENTER_RIGHT); // tin nguồn do viewer gửi
+        return buildReplyTitle(actorIsViewer, sourceIsViewer);
+    }
+
+    public void reattachReplyChipIfAny(HBox row) {
+        if (row == null) return;
+        Object rt = row.getProperties().get("replyTo");
+        if (rt == null) return;
+        // gắn lại nếu bubble vừa bị replace
+        VBox target = findBubbleBox(row);
+        if (target == null) return;
+        if (!hasReplyChip(target)) {
+            attachReplyChipById(row, row.getAlignment()==Pos.CENTER_LEFT, String.valueOf(rt));
+        }
+    }
+
+    /**/
     private void scrollToBottom() {
         var n = controller.getMessageContainer();
         var p = n.getParent();
@@ -373,6 +538,18 @@ public class UIMessageHandler {
 
         controller.getMessageContainer().getChildren().add(row);
         scrollToBottom();
+        
+        Object ud = row.getUserData();
+        if (ud != null) {
+            String id = String.valueOf(ud);
+            var waiters = controller.getPendingReplyLinks().remove(id);
+            if (waiters != null) {
+                for (HBox waiter : waiters) {
+                    boolean incomingWaiter = (waiter.getAlignment() == Pos.CENTER_LEFT);
+                    attachReplyChipById(waiter, incomingWaiter, id); // bây giờ id đã có srcRow
+                }
+            }
+        }
         return row;
     }
 
@@ -623,8 +800,17 @@ public class UIMessageHandler {
             if (!row.getChildren().isEmpty()) bubble = row.getChildren().get(row.getChildren().size() - 1);
         }
         if (!(bubble instanceof VBox vb)) return null;
+
         for (Node n : vb.getChildren()) {
+            // bỏ qua reply-chip
+            if (n instanceof VBox sub && sub.getStyleClass().contains("reply-chip")) continue;
             if (n instanceof Label lbl) return lbl;
+            // nếu nested VBox, tìm tiếp một lớp (bubble text thường đơn giản, nhưng để chắc ăn)
+            if (n instanceof VBox nested) {
+                for (Node m : nested.getChildren()) {
+                    if (m instanceof Label lbl2) return lbl2;
+                }
+            }
         }
         return null;
     }
@@ -674,17 +860,10 @@ public class UIMessageHandler {
         Node srcBubble = srcIncoming ? srcRow.getChildren().get(0)
                                      : srcRow.getChildren().get(srcRow.getChildren().size()-1);
         String srcId = (srcBubble instanceof Region r) ? r.getId() : null;
-
+        boolean actorIsViewer  = !newMsgIncoming; // tin mới: incoming=false -> viewer là actor
+        boolean sourceIsViewer = !srcIncoming; // nguồn: incoming=false -> viewer là source
         // Tạo title & snippet
-        String title;
-        if (!srcIncoming) {
-            // trả lời tin nhắn của chính mình
-            title = "Bạn đã trả lời chính mình";
-        } else {
-            // trả lời tin nhắn của đối phương
-            String peer = (controller.getSelectedUser() != null) ? controller.getSelectedUser().getUsername() : "đối phương";
-            title = "Bạn đã trả lời " + peer;
-        }
+        String title = buildReplyTitle(actorIsViewer, sourceIsViewer);
 
         String snippet = "Tin nhắn";
         if (srcId != null && srcId.endsWith("-text")) {

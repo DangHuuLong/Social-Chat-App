@@ -103,16 +103,20 @@ public class MidController implements CallSignalListener {
     private final Map<String, HBox> pendingHistoryFileRows = new ConcurrentHashMap<>();
     private final Map<String, MediaPlayer> videoPlayers = new ConcurrentHashMap<>();
     
-    public Map<String, HBox> getPendingHistoryFileRows() { return pendingHistoryFileRows; }
     
     MediaHandler mediaHandler = new MediaHandler(this);
     private final Map<String, Long> fileIdToSize = new ConcurrentHashMap<>();
     private final java.util.Map<String,String> fileIdToMsgId = new java.util.concurrent.ConcurrentHashMap<>();
-    
-    public java.util.Map<String,String> getFileIdToMsgId() { return fileIdToMsgId; }
-    public Map<String, Long> getFileIdToSize() { return fileIdToSize; }
+
     private final ObservableMap<String, File> dlPath = FXCollections.observableHashMap();
     private final ObservableMap<String, File> downloadedFiles = FXCollections.observableHashMap(); 
+    private final Map<String, java.util.List<HBox>> pendingReplyLinks = new ConcurrentHashMap<>();
+    public Map<String, HBox> getPendingHistoryFileRows() { return pendingHistoryFileRows; }
+    public java.util.Map<String,String> getFileIdToMsgId() { return fileIdToMsgId; }
+    public Map<String, Long> getFileIdToSize() { return fileIdToSize; }
+    public Map<String, java.util.List<HBox>> getPendingReplyLinks() {
+        return pendingReplyLinks;
+    }
     public ObservableMap<String, File> getDlPath() { return dlPath; }
     public ObservableMap<String, File> getDownloadedFiles() {
         return downloadedFiles;
