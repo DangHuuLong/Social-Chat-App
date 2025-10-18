@@ -148,11 +148,81 @@ public class ClientHandler implements Runnable {
                 ack.transferId = String.valueOf(id);
                 sendFrame(ack);
             }
+            requestSmartReply(String.valueOf(id), username, to, f.body);
         } catch (SQLException e) {
             sendFrame(Frame.error("DM_SAVE_FAIL"));
         }
     }
+    
+    // === SMART REPLY ===
+    private void handleSmartReply(Frame f) {
+        // Dự phòng nếu bạn muốn client gửi SMART_REPLY (chưa dùng)
+        System.out.println("[SERVER] Received SMART_REPLY frame (no-op): " + f.body);
+    }
 
+    // === CALL FASTAPI SMART-REPLY BACKEND ===
+    private void requestSmartReply(String conversationId, String sender, String recipient, String lastMessage) {
+        try {
+            // ✅ Tạo payload JSON gọn gàng
+            String escapedMsg = (lastMessage == null ? "" : lastMessage.replace("\"", "\\\""));
+            String payload = """
+            {
+                "conversation_id": "%s",
+                "messages": [
+                    {"role": "A", "text": "%s"}
+                ],
+                "n": 3,
+                "max_words": 12,
+                "lang": "vi"
+            }
+            """.formatted(conversationId, escapedMsg);
+
+            System.out.println("[SMART-REPLY] Request payload: " + payload);
+
+            // ✅ Gọi FastAPI /smart-reply
+            var url = new java.net.URL("http://localhost:8000/smart-reply");
+            var conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(payload.getBytes());
+                os.flush();
+            }
+
+            int status = conn.getResponseCode();
+            if (status != 200) {
+                System.err.println("[SMART-REPLY] API returned status: " + status);
+                return;
+            }
+
+            // ✅ Đọc phản hồi JSON từ FastAPI
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+            }
+
+            String resp = sb.toString();
+            System.out.println("[SMART-REPLY] Response: " + resp);
+
+            if (resp.contains("suggestions")) {
+                // Gửi Frame SMART_REPLY tới client nhận
+                Frame replyFrame = new Frame(MessageType.SMART_REPLY, "system", recipient, resp);
+                ClientHandler target = online.get(recipient);
+                if (target != null) {
+                    target.sendFrame(replyFrame);
+                    System.out.println("[SMART-REPLY] Sent SMART_REPLY to " + recipient);
+                } else {
+                    System.out.println("[SMART-REPLY] Recipient " + recipient + " is offline");
+                }
+            }
+
+        } catch (Exception e) {
+            System.err.println("[SMART-REPLY] failed: " + e.getMessage());
+        }
+    }
     /* ================= EDIT ================= */
     private void handleEditMessage(Frame f) {
         try {

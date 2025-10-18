@@ -50,6 +50,8 @@ public class MessageHandler {
             case ACK -> handleAckFrame(f);
             case FILE_HISTORY -> handleFileHistoryFrame(f);
             case ERROR -> Platform.runLater(() -> controller.showErrorAlert("Lỗi: " + f.body));
+            case SMART_REPLY -> handleSmartReplyFrame(f);
+
         }
     }
 
@@ -720,4 +722,73 @@ public class MessageHandler {
                 : defaultIncoming;
         controller.addCallLog(d.icon, d.title, d.subtitle, incoming);
     }
+
+ // === SMART REPLY ===
+    private void handleSmartReplyFrame(Frame f) {
+        String body = (f.body == null) ? "" : f.body.trim();
+        if (body.isEmpty()) return;
+
+        try {
+            // ✅ Parse JSON chuẩn để lấy mảng suggestions
+            org.json.JSONObject json = new org.json.JSONObject(body);
+            org.json.JSONArray arr = json.optJSONArray("suggestions");
+            if (arr == null || arr.isEmpty()) return;
+
+            java.util.List<String> suggestions = new java.util.ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) {
+                String s = arr.getString(i).trim();
+                if (!s.isEmpty()) suggestions.add(s);
+            }
+
+            if (suggestions.isEmpty()) return;
+
+            // ✅ Render gợi ý lên UI
+            Platform.runLater(() -> {
+                try {
+                    VBox msgBox = controller.getMessageContainer();
+                    if (msgBox == null) return;
+
+                    // 🧹 XÓA TẤT CẢ Smart Reply Box CŨ
+                    msgBox.getChildren().removeIf(node ->
+                            node instanceof HBox h &&
+                            "smart-reply-box".equals(h.getId())
+                    );
+
+                    // 🆕 TẠO BOX GỢI Ý MỚI
+                    HBox suggestionBox = new HBox(8);
+                    suggestionBox.setId("smart-reply-box");
+                    suggestionBox.setStyle("-fx-padding: 6; -fx-alignment: center-left;");
+
+                    for (String sug : suggestions) {
+                        javafx.scene.control.Button btn = new javafx.scene.control.Button(sug);
+                        btn.setStyle("""
+                            -fx-background-color: #f1f1f1;
+                            -fx-border-radius: 8;
+                            -fx-background-radius: 8;
+                            -fx-cursor: hand;
+                        """);
+                        btn.setOnAction(ev -> {
+                            controller.getMessageField().setText(sug);
+                            controller.onSendMessage();
+                            msgBox.getChildren().remove(suggestionBox);
+                        });
+                        suggestionBox.getChildren().add(btn);
+                    }
+
+                    // 🪄 THÊM CHỈ SAU TIN NHẮN GẦN NHẤT
+                    msgBox.getChildren().add(suggestionBox);
+
+                } catch (Exception ex) {
+                    System.err.println("[UI] SMART_REPLY render failed: " + ex.getMessage());
+                }
+            });
+
+
+        } catch (Exception e) {
+            System.err.println("[SMART-REPLY] JSON parse failed: " + e.getMessage());
+            System.err.println("[SMART-REPLY] Raw body: " + body);
+        }
+    }
+
+
 }

@@ -33,7 +33,8 @@ public enum MessageType {
     DELETE_FILE((byte)36),
     DELETE_AUDIO((byte)37),
     AUDIO_HISTORY((byte)38),
-	DOWNLOAD_AUDIO((byte)39);
+	DOWNLOAD_AUDIO((byte)39),
+	SMART_REPLY((byte)40);
     public final byte id;
     MessageType(byte id){ this.id = id; }
 

@@ -8,12 +8,12 @@
 	</classpathentry>
 	<classpathentry kind="con" path="org.eclipse.fx.ide.jdt.core.JAVAFX_CONTAINER"/>
 	<classpathentry kind="con" path="org.eclipse.jdt.USER_LIBRARY/JavaFX"/>
-	<classpathentry kind="lib" path="D:/mysql-connector-j-9.3.0/mysql-connector-j-9.3.0.jar"/>
-	<classpathentry kind="lib" path="D:/java-2024-09/worksplace/jbcrypt-0.4.jar"/>
-	<classpathentry kind="lib" path="D:/java-2024-09/worksplace/json-20240303.jar"/>
-	<classpathentry kind="lib" path="D:/java-2024-09/worksplace/webcam-capture-0.3.12.jar"/>
-	<classpathentry kind="lib" path="D:/java-2024-09/worksplace/slf4j-api-1.7.36.jar"/>
-	<classpathentry kind="lib" path="D:/java-2024-09/worksplace/slf4j-simple-1.7.36.jar"/>
-	<classpathentry kind="lib" path="D:/java-2024-09/worksplace/bridj-0.7.0.jar"/>
+	<classpathentry kind="lib" path="C:/Users/huuda/Downloads/webcam-capture-0.3.12.jar"/>
+	<classpathentry kind="lib" path="C:/Users/huuda/Downloads/slf4j-simple-1.7.36.jar"/>
+	<classpathentry kind="lib" path="C:/Users/huuda/Downloads/slf4j-api-1.7.36.jar"/>
+	<classpathentry kind="lib" path="C:/Users/huuda/Downloads/bridj-0.7.0.jar"/>
+	<classpathentry kind="lib" path="C:/Users/huuda/Downloads/json-20240303.jar"/>
+	<classpathentry kind="lib" path="C:/Users/huuda/Downloads/jbcrypt-0.4.jar"/>
+	<classpathentry kind="lib" path="C:/mysql-connector-j-8.0.33.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>
