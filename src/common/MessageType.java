@@ -34,7 +34,12 @@ public enum MessageType {
     DELETE_AUDIO((byte)37),
     AUDIO_HISTORY((byte)38),
 	DOWNLOAD_AUDIO((byte)39),
-	SMART_REPLY((byte)40);
+	SMART_REPLY((byte)40),
+	CREATE_GROUP((byte)41),
+	ADD_MEMBER((byte)42),
+	REMOVE_MEMBER((byte)43),
+	DELETE_GROUP((byte)44),
+	LIST_MEMBERS((byte)45);
     public final byte id;
     MessageType(byte id){ this.id = id; }
 

@@ -6,7 +6,7 @@ import common.Frame;
 import common.FrameIO;
 import common.MessageType;
 import server.dao.FileDao;
-
+import server.dao.GroupDao;
 import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
@@ -22,7 +22,7 @@ public class ClientHandler implements Runnable {
     private final Map<String, ClientHandler> online;
     private final MessageDao messageDao;
     private final FileDao fileDao;
-
+    private final GroupDao groupDao;
     private DataInputStream binIn;
     private DataOutputStream binOut;
 
@@ -47,12 +47,13 @@ public class ClientHandler implements Runnable {
     public ClientHandler(Socket socket,
                          Set<ClientHandler> clients,
                          Map<String, ClientHandler> online,
-                         MessageDao messageDao, FileDao fileDao) {
+                         MessageDao messageDao, FileDao fileDao, GroupDao groupDao) {
         this.socket = socket;
         this.clients = clients;
         this.online = online;
         this.messageDao = messageDao;
         this.fileDao = fileDao;
+        this.groupDao = groupDao;
     }
 
     @Override
@@ -90,7 +91,11 @@ public class ClientHandler implements Runnable {
 
                     case EDIT_MSG -> handleEditMessage(f);
                     case SEARCH   -> handleSearch(f);
-
+                    case CREATE_GROUP -> handleCreateGroup(f);
+                    case ADD_MEMBER -> handleAddMember(f);
+                    case REMOVE_MEMBER -> handleRemoveMember(f);
+                    case DELETE_GROUP -> handleDeleteGroup(f);
+                    case LIST_MEMBERS -> handleListMember(f);
                     default -> System.out.println("[SERVER] Unknown frame: " + f.type);
                 }
             }
@@ -578,7 +583,138 @@ public class ClientHandler implements Runnable {
             sendFrame(Frame.error("DELETE_FAIL"));
         }
     }
+    /* GROUP */
+    /* ================= CREATE GROUP ================= */
+    private void handleCreateGroup(Frame f) {
+        try {
+            String name = (f.body == null || f.body.isBlank()) ? "Unnamed Group" : f.body.trim();
+            int groupId = groupDao.createGroup(username, name);
 
+            if (groupId > 0) {
+                sendFrame(Frame.ack("OK GROUP_CREATED " + groupId));
+            } else {
+                sendFrame(Frame.error("GROUP_CREATE_FAIL"));
+            }
+        } catch (SQLException e) {
+            sendFrame(Frame.error("DB_ERROR_CREATE_GROUP"));
+        }
+    }
+
+    /* ================= ADD MEMBER ================= */
+    private void handleAddMember(Frame f) {
+        try {
+            String body = f.body;
+            int groupId = Integer.parseInt(jsonGet(body, "group_id"));
+            String newMember = jsonGet(body, "username");
+
+            if (newMember == null || newMember.isBlank()) {
+                sendFrame(Frame.error("MISSING_MEMBER"));
+                return;
+            }
+
+            boolean added = groupDao.addMember(groupId, newMember);
+            if (added) {
+                sendFrame(Frame.ack("OK MEMBER_ADDED " + newMember));
+
+                // Notify if user is online
+                ClientHandler target = online.get(newMember);
+                if (target != null) {
+                    target.sendFrame(Frame.ack("You were added to group " + groupId + " by " + username));
+                }
+            } else {
+                sendFrame(Frame.error("ADD_MEMBER_FAIL"));
+            }
+        } catch (Exception e) {
+            sendFrame(Frame.error("ADD_MEMBER_EXCEPTION"));
+        }
+    }
+
+    /* ================= REMOVE MEMBER ================= */
+    private void handleRemoveMember(Frame f) {
+        try {
+            String body = f.body;
+            int groupId = Integer.parseInt(jsonGet(body, "group_id"));
+            String member = jsonGet(body, "username");
+
+            if (member == null || member.isBlank()) {
+                sendFrame(Frame.error("MISSING_MEMBER"));
+                return;
+            }
+
+            boolean removed = groupDao.removeMember(groupId, member);
+            if (removed) {
+                sendFrame(Frame.ack("OK MEMBER_REMOVED " + member));
+
+                ClientHandler target = online.get(member);
+                if (target != null) {
+                    target.sendFrame(Frame.ack("You were removed from group " + groupId + " by " + username));
+                }
+            } else {
+                sendFrame(Frame.error("REMOVE_MEMBER_FAIL"));
+            }
+        } catch (Exception e) {
+            sendFrame(Frame.error("REMOVE_MEMBER_EXCEPTION"));
+        }
+    }
+
+    /* ================= DELETE GROUP (only owner) ================= */
+    private void handleDeleteGroup(Frame f) {
+        try {
+            int groupId = Integer.parseInt(f.body.trim());
+            boolean ok = groupDao.deleteGroup(groupId, username);
+
+            if (ok) {
+                sendFrame(Frame.ack("OK GROUP_DELETED " + groupId));
+
+                // Notify members (if online)
+                var members = groupDao.listMembers(groupId);
+                for (String m : members) {
+                    ClientHandler target = online.get(m);
+                    if (target != null) {
+                        target.sendFrame(Frame.ack("Group " + groupId + " deleted by owner " + username));
+                    }
+                }
+            } else {
+                sendFrame(Frame.error("DELETE_GROUP_DENIED"));
+            }
+        } catch (Exception e) {
+            sendFrame(Frame.error("DELETE_GROUP_FAIL"));
+        }
+    }
+    /* ================= LIST MEMBERS (only owner) ================= */
+    private void handleListMember(Frame f) {
+    	try {
+            int groupId = Integer.parseInt(f.body.trim());
+            var members = groupDao.listMembers(groupId);
+
+            if (members == null || members.isEmpty()) {
+                sendFrame(Frame.error("NO_MEMBERS_IN_GROUP"));
+                return;
+            }
+
+            // Gộp danh sách thành JSON gọn để client dễ parse
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"group_id\":").append(groupId).append(",\"members\":[");
+
+            for (int i = 0; i < members.size(); i++) {
+                sb.append("\"").append(escJson(members.get(i))).append("\"");
+                if (i < members.size() - 1) sb.append(",");
+            }
+            sb.append("]}");
+
+            Frame resp = new Frame(MessageType.LIST_MEMBERS, "server", username, sb.toString());
+            sendFrame(resp);
+
+            // Gửi ACK cuối cùng
+            sendFrame(Frame.ack("OK LIST_MEMBERS " + members.size()));
+
+        } catch (SQLException e) {
+            sendFrame(Frame.error("DB_LIST_MEMBER_FAIL"));
+        } catch (Exception e) {
+            sendFrame(Frame.error("LIST_MEMBER_FAIL"));
+        }
+    	
+    }
     /* ================= Helpers ================= */
     private void broadcast(String msg, boolean excludeSelf) {
         for (ClientHandler c : clients) {
