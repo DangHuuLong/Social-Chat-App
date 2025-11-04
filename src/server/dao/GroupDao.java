@@ -4,6 +4,8 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 
+import common.Group;
+
 public class GroupDao {
     private final Connection conn;
 
@@ -103,4 +105,59 @@ public class GroupDao {
         }
         return null;
     }
+    public boolean isMember(int groupId, String username) throws SQLException {
+        String sql = "SELECT 1 FROM group_members WHERE group_id=? AND username=? LIMIT 1";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, groupId);
+            ps.setString(2, username);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+    public List<Group> listGroupsForUser(String username) throws SQLException {
+        String sql = """
+            SELECT g.id, g.name, g.owner
+            FROM groups g
+            JOIN group_members gm ON g.id = gm.group_id
+            WHERE gm.username = ?
+        """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, username);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<Group> groups = new ArrayList<>();
+                while (rs.next()) {
+                    Group g = new Group(
+                        rs.getInt("id"),
+                        rs.getString("name"),
+                        rs.getString("owner")
+                    );
+                    groups.add(g);
+                }
+                return groups;
+            }
+        }
+    }
+    
+    public List<String> listMembersOrderByJoinTime(int groupId) throws SQLException {
+        String sql = "SELECT username FROM group_members WHERE group_id=? ORDER BY joined_at ASC";
+        List<String> list = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, groupId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) list.add(rs.getString("username"));
+            }
+        }
+        return list;
+    }
+
+    public boolean updateOwner(int groupId, String newOwner) throws SQLException {
+        String sql = "UPDATE groups SET owner=? WHERE id=?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, newOwner);
+            ps.setInt(2, groupId);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
 }

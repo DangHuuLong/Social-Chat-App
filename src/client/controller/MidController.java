@@ -13,6 +13,7 @@ import client.media.LanVideoSession;
 import client.signaling.CallSignalListener;
 import client.signaling.CallSignalingService;
 import common.Frame;
+import common.MessageType;
 import common.User;
 import javafx.application.Platform;
 import javafx.beans.value.ChangeListener;
@@ -27,7 +28,7 @@ import javafx.scene.media.MediaPlayer;
 import javafx.stage.Stage;
 import javafx.stage.Window;
 import server.dao.UserDAO;
-
+import javafx.util.Duration;
 import javax.sound.sampled.AudioFormat;
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -74,6 +75,12 @@ public class MidController implements CallSignalListener {
     private LanAudioSession audioSession;
     
     private ImageView midHeaderAvatar;
+	private HBox replyBar;
+	private ImageView replyThumb;
+	private Label replyFileIcon, replyTitle, replyContent;
+	private Button replyCloseBtn;
+	private HBox replyingRow = null;
+	private boolean replyingIncoming = false;
 
     private ChangeListener<Number> autoScrollListener;
     private final List<MsgView> messageSnapshot = new ArrayList<>();
@@ -94,14 +101,18 @@ public class MidController implements CallSignalListener {
     private final Map<String, HBox> pendingHistoryFileRows = new ConcurrentHashMap<>();
     private final Map<String, MediaPlayer> videoPlayers = new ConcurrentHashMap<>();
     
-    public Map<String, HBox> getPendingHistoryFileRows() { return pendingHistoryFileRows; }
     
     MediaHandler mediaHandler = new MediaHandler(this);
     private final Map<String, Long> fileIdToSize = new ConcurrentHashMap<>();
     private final java.util.Map<String,String> fileIdToMsgId = new java.util.concurrent.ConcurrentHashMap<>();
     
+    private final Map<String, java.util.List<HBox>> pendingReplyLinks = new ConcurrentHashMap<>();
+    public Map<String, HBox> getPendingHistoryFileRows() { return pendingHistoryFileRows; }
     public java.util.Map<String,String> getFileIdToMsgId() { return fileIdToMsgId; }
     public Map<String, Long> getFileIdToSize() { return fileIdToSize; }
+    public Map<String, java.util.List<HBox>> getPendingReplyLinks() {
+        return pendingReplyLinks;
+    }
     private final ObservableMap<String, File> dlPath = FXCollections.observableHashMap();
     private final ObservableMap<String, File> downloadedFiles = FXCollections.observableHashMap(); 
     public ObservableMap<String, File> getDlPath() { return dlPath; }
@@ -121,7 +132,20 @@ public class MidController implements CallSignalListener {
 
         if (this.messageField != null) this.messageField.setOnAction(e -> onSendMessage());
     }
-
+    
+    public void bindReplyBar(HBox bar, ImageView thumb, Label fileIcon,
+            Label title, Label content, Button closeBtn) {
+		this.replyBar = bar;
+		this.replyThumb = thumb;
+		this.replyFileIcon = fileIcon;
+		this.replyTitle = title;
+		this.replyContent = content;
+		this.replyCloseBtn = closeBtn;
+		
+		if (replyCloseBtn != null) {
+			replyCloseBtn.setOnAction(e -> clearReplyPreview());
+		}
+	}
     public void setRightController(RightController rc) { this.rightController = rc; }
     public void setCurrentUser(User user) { this.currentUser = user; }
     public CallHandler getCallHandler() { return callHandler; }
@@ -129,11 +153,107 @@ public class MidController implements CallSignalListener {
         this.connection = conn;
         if (this.connection != null) {
             this.connection.setMidController(this);
-            this.connection.startListener(
-                f -> Platform.runLater(() -> handleServerFrame(f)),
-                err -> System.err.println("[NET] Disconnected: " + err)
-            );
         }
+        // KHÔNG gọi startListener ở đây nữa
+    }
+
+    public void showReplyPreview(HBox row, boolean incoming) {
+        if (replyBar == null) return;
+
+        replyThumb.setVisible(false); replyThumb.setManaged(false);
+        replyFileIcon.setVisible(false); replyFileIcon.setManaged(false);
+        replyTitle.setText("Trả lời");
+        String preview = "Tin nhắn";
+
+        Node bubble = incoming ? row.getChildren().get(0)
+                               : row.getChildren().get(row.getChildren().size()-1);
+        String bid = (bubble instanceof Region r) ? r.getId() : null;
+
+        if (bid != null && bid.endsWith("-text")) {
+            if (bubble instanceof VBox vb) {
+                for (Node n : vb.getChildren()) {
+                    if (n instanceof Label lbl) { preview = lbl.getText(); break; }
+                }
+            }
+        } else if (bid != null && bid.endsWith("-image")) {
+            if (bubble instanceof VBox vb) {
+                for (Node n : vb.getChildren()) {
+                    if (n instanceof ImageView iv && iv.getImage()!=null) {
+                        replyThumb.setImage(iv.getImage());
+                        replyThumb.setVisible(true); replyThumb.setManaged(true);
+                        preview = "Ảnh";
+                        break;
+                    }
+                }
+            }
+        } else if (bid != null && bid.endsWith("-file")) {
+            if (bubble instanceof VBox vb) {
+                for (Node c : vb.lookupAll("#fileNamePrimary")) {
+                    if (c instanceof Label lbl) { preview = lbl.getText(); break; }
+                }
+            }
+            replyFileIcon.setText("📄");
+            replyFileIcon.setVisible(true); replyFileIcon.setManaged(true);
+            if (preview == null || preview.isBlank()) preview = "Tệp đính kèm";
+        } else if (bid != null && bid.endsWith("-video")) {
+            replyFileIcon.setText("🎞️");
+            replyFileIcon.setVisible(true); replyFileIcon.setManaged(true);
+            preview = "Video";
+        } else if (bid != null && bid.endsWith("-voice")) {
+            replyFileIcon.setText("🎤");
+            replyFileIcon.setVisible(true); replyFileIcon.setManaged(true);
+            preview = "Tin nhắn thoại";
+        } else {
+            replyFileIcon.setText("🎦");
+            replyFileIcon.setVisible(true); replyFileIcon.setManaged(true);
+            preview = "Tin nhắn cuộc gọi";
+        }
+
+        if (preview != null && preview.length() > 140) preview = preview.substring(0,140) + "…";
+        replyContent.setText(preview == null ? "" : preview);
+
+        replyBar.setVisible(true);
+        replyBar.setManaged(true);
+
+        this.replyingRow = row;
+        this.replyingIncoming = incoming;
+    }
+
+    public void clearReplyPreview() {
+        if (replyBar == null) return;
+        replyBar.setVisible(false);
+        replyBar.setManaged(false);
+        if (replyThumb != null) replyThumb.setImage(null);
+        this.replyingRow = null;
+    }
+    
+    public HBox getReplyingRow() { return replyingRow; }
+    public boolean isReplyingIncoming() { return replyingIncoming; }
+    public boolean hasReplyContext() { return replyingRow != null; }
+    
+    public void scrollToRow(HBox target) {
+        if (target == null || messageContainer == null) return;
+        // tìm ScrollPane chứa messageContainer
+        Node p = messageContainer.getParent();
+        while (p != null && !(p instanceof ScrollPane)) p = p.getParent();
+        if (!(p instanceof ScrollPane sp)) return;
+
+        // Tính vvalue tương đối của target trong container
+        target.layout(); messageContainer.layout(); sp.layout();
+        double y = target.getBoundsInParent().getMinY();
+        double contentH = messageContainer.getBoundsInLocal().getHeight();
+        double viewportH = sp.getViewportBounds().getHeight();
+        double max = Math.max(1e-6, contentH - viewportH);
+        double vv = Math.min(1.0, Math.max(0.0, y / max));
+
+        Platform.runLater(() -> {
+            sp.setVvalue(vv);
+            // hiệu ứng nhỏ để "nháy" highlight (tùy chọn)
+            target.pseudoClassStateChanged(javafx.css.PseudoClass.getPseudoClass("reply-target"), true);
+            new javafx.animation.PauseTransition(Duration.millis(900)).setOnFinished(e ->
+                target.pseudoClassStateChanged(javafx.css.PseudoClass.getPseudoClass("reply-target"), false)
+            );
+        });
     }
     
     public void onDownloadCompleted(String fid, File completedFile) {
@@ -159,12 +279,6 @@ public class MidController implements CallSignalListener {
             fileIdToMsgId.put(fid, String.valueOf(messageId));
         }
 
-        // Nếu có giữ kích thước tạm theo fid, bạn có thể chuyển sang key khác (không bắt buộc)
-        // ví dụ: if (fileId > 0 && fileIdToSize.containsKey(fid)) {
-        //     fileIdToSize.put(String.valueOf(fileId), fileIdToSize.remove(fid));
-        // }
-
-        // Tìm bubble của file vừa gửi (đã lưu ở outgoingFileBubbles lúc showOutgoingFile)
         HBox row = outgoingFileBubbles.remove(fid);
         if (row != null) {
             // Gắn lại fid lên properties (để code khác còn truy vết nếu cần)
@@ -178,6 +292,9 @@ public class MidController implements CallSignalListener {
     public void openConversation(User u) {
         System.out.println("[OPEN] conversation with " + u.getUsername());
         this.selectedUser = u;
+        this.currentPeerUser = u;
+        this.currentPeer = u.getUsername(); // ✅ FIX: remember current peer for 1-1 chat
+        if (messageField != null) messageField.clear();
         if (currentChatName != null) currentChatName.setText(u.getUsername());
 
         try {
@@ -191,7 +308,7 @@ public class MidController implements CallSignalListener {
             applyStatusLabel(currentChatStatus, false, null);
             if (rightController != null) rightController.showUser(u, false, null);
         }
-        
+
         Image peerAvatar = loadAvatarImage(u.getId());
         if (midHeaderAvatar != null && peerAvatar != null) {
             midHeaderAvatar.setImage(peerAvatar);
@@ -206,9 +323,9 @@ public class MidController implements CallSignalListener {
             }
             messageContainer.getChildren().clear();
         }
+
         shownCallLogs.clear();
         messageSnapshot.clear(); 
-
         enableAutoScroll();
 
         if (connection != null && connection.isAlive()) {
@@ -220,11 +337,60 @@ public class MidController implements CallSignalListener {
             }
         }
 
-        this.currentPeerUser = u;
         List<Frame> pending = pendingFileEvents.remove(u.getUsername());
         if (pending != null) pending.forEach(this::handleServerFrame);
     }
+
     
+    public void openGroupConversation(LeftController.GroupViewModel g) {
+        this.selectedUser = null;
+        this.currentPeerUser = null;
+        this.currentPeer = "group:" + g.groupId; // để biết peer hiện tại là group
+
+        if (currentChatName != null) currentChatName.setText(g.name);
+        if (currentChatStatus != null) currentChatStatus.setText("Nhóm • owner: " + g.owner);
+
+        // avatar nhóm:
+        Image groupAvatar = new Image(
+            Objects.requireNonNull(
+                getClass().getResource("/client/view/images/group.png")
+            ).toExternalForm()
+        );
+        if (midHeaderAvatar != null) midHeaderAvatar.setImage(groupAvatar);
+        if (rightController != null) rightController.setAvatar(groupAvatar);
+
+        // clear messageContainer như openConversation(user)
+        if (messageContainer != null) {
+            messageContainer.getChildren().clear();
+        }
+
+        shownCallLogs.clear();
+        messageSnapshot.clear();
+        enableAutoScroll();
+
+        // xin history từ server cho group
+        if (connection != null && connection.isAlive()) {
+            try {
+                // TOÀN BỘ CHỖ NÀY TÙY VÀO GIAO THỨC SERVER
+                // Ví dụ: history(fromUser, toPeer, limit)
+                // toPeer = "group:<id>"
+            	connection.groupHistory(currentUser.getUsername(), String.valueOf(g.groupId), 50);
+
+            } catch (Exception e) {
+                System.err.println("[HISTORY] Failed to load group history: " + e.getMessage());
+                Platform.runLater(() -> showErrorAlert("Không tải được lịch sử nhóm."));
+            }
+        }
+        if (rightController != null) {
+            User pseudoGroup = new User();
+            pseudoGroup.setUsername(g.name); // show group name
+            rightController.showGroup(pseudoGroup.getUsername(), groupAvatar);
+            rightController.setAvatar(new Image(
+                getClass().getResource("/client/view/images/group.png").toExternalForm()
+            ));
+        }
+
+    }
 
 	private Image loadAvatarImage(int userId) {
 	    try {
@@ -279,8 +445,42 @@ public class MidController implements CallSignalListener {
     }
 
     public void onSendMessage() {
+        if (messageField == null) return;
+        String text = messageField.getText().trim();
+        if (text.isEmpty()) return;
+
+        if (connection == null || !connection.isAlive()) {
+            showErrorAlert("Mất kết nối đến server.");
+            return;
+        }
+
+        if (currentPeer != null && currentPeer.startsWith("group:")) {
+            try {
+                int groupId = Integer.parseInt(currentPeer.substring("group:".length()));
+
+                // Gửi frame tin nhắn nhóm lên server
+                Frame frame = new Frame(
+                        MessageType.GROUP_MSG,
+                        currentUser.getUsername(),
+                        String.valueOf(groupId), 
+                        text
+                    );
+                connection.sendFrame(frame);
+
+                // Render local cho mượt
+                addTextMessage(text, false);
+                messageField.clear();
+
+            } catch (Exception e) {
+                showErrorAlert("Không gửi được tin nhắn nhóm: " + e.getMessage());
+            }
+            return; 
+        }
+
         new MessageHandler(this).onSendMessage();
+        clearReplyPreview();
     }
+
 
     private ScrollPane findMessageScrollPane() {
         if (messageContainer == null) return null;
@@ -521,6 +721,9 @@ public class MidController implements CallSignalListener {
     public void showVoiceRecordDialog(Window owner, AudioFormat format, File audioFile, Consumer<byte[]> onComplete) {
         voiceRecordHandler.showVoiceRecordDialog(owner, format, audioFile, onComplete);
     }
+    public void onIncomingFrame(Frame f) {
+        handleServerFrame(f);
+    }
 
     public Label getCurrentChatName() { return currentChatName; }
     public Label getCurrentChatStatus() { return currentChatStatus; }
@@ -554,5 +757,12 @@ public class MidController implements CallSignalListener {
     public void setCurrentPeerUser(User currentPeerUser) { this.currentPeerUser = currentPeerUser; }
     public void setVideoSession(LanVideoSession videoSession) { this.videoSession = videoSession; }
     public void setAudioSession(LanAudioSession audioSession) { this.audioSession = audioSession; }
+    public String getCurrentGroupChatName() {
+        if (currentChatName != null) {
+            return currentChatName.getText();
+        }
+        return null;
+    }
+
 
 }

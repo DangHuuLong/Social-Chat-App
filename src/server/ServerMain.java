@@ -4,6 +4,7 @@ import server.dao.DBConnection;
 import server.dao.MessageDao;
 import server.dao.FileDao;
 import server.dao.GroupDao;
+import server.dao.GroupMessageDao;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -24,6 +25,7 @@ public class ServerMain {
     private MessageDao messageDao;
     private FileDao filedao;
     private GroupDao groupdao;
+    private GroupMessageDao groupmessageDao;
     public static void main(String[] args) {
         new ServerMain().start();
     }
@@ -35,13 +37,14 @@ public class ServerMain {
             messageDao = new MessageDao(conn);
             filedao = new FileDao(conn);
             groupdao = new GroupDao(conn);
+            groupmessageDao = new GroupMessageDao(conn);
             try (ServerSocket ss = new ServerSocket(PORT)) {
                 System.out.println("✅ Server started at port " + PORT);
                 while (true) {
                     Socket s = ss.accept();
                     System.out.println("➡ Client connected: " + s.getRemoteSocketAddress());
 
-                    ClientHandler handler = new ClientHandler(s, clients, online, messageDao, filedao, groupdao);;
+                    ClientHandler handler = new ClientHandler(s, clients, online, messageDao, filedao, groupdao, groupmessageDao);;
                     clients.add(handler);
                     pool.submit(handler);
                 }

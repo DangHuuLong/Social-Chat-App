@@ -95,7 +95,42 @@
                                 </VBox>
                             </content>
                         </ScrollPane>
-        
+                       <!-- REPLY PREVIEW BAR -->
+						<HBox fx:id="replyBar" spacing="8" alignment="CENTER_LEFT"
+						      visible="false" managed="false"
+						      styleClass="reply-bar">
+						    <children>
+						        <!-- viền trái nhỏ để nhấn mạnh -->
+						        <Region prefWidth="4" minWidth="4" maxWidth="4" styleClass="reply-accent"/>
+						
+						        <!-- thumbnail/icon + text -->
+						        <HBox spacing="8" alignment="CENTER_LEFT" HBox.hgrow="ALWAYS">
+						            <children>
+						                <!-- ảnh thu nhỏ nếu là image, còn nếu là file thì hiển thị 📄 -->
+						                <StackPane prefWidth="36" prefHeight="36" maxWidth="36" maxHeight="36"
+						                           styleClass="reply-thumb">
+						                    <children>
+						                        <ImageView fx:id="replyThumb" fitWidth="36" fitHeight="36" preserveRatio="true" visible="false" managed="false"/>
+						                        <Label fx:id="replyFileIcon" text="📄" style="-fx-font-size:18px;" visible="false" managed="false"/>
+						                    </children>
+						                </StackPane>
+						
+						                <VBox spacing="2" HBox.hgrow="ALWAYS">
+						                    <children>
+						                        <Label fx:id="replyTitle" text="Trả lời" styleClass="reply-title"/>
+						                        <Label fx:id="replyContent" text="" styleClass="reply-text" wrapText="true"/>
+						                    </children>
+						                </VBox>
+						            </children>
+						        </HBox>
+						
+						        <!-- nút đóng -->
+						        <Button fx:id="replyCloseBtn" text="✕" focusTraversable="false" styleClass="reply-close"/>
+						    </children>
+						    <padding>
+						        <Insets top="8" right="10" bottom="8" left="8"/>
+						    </padding>
+						</HBox>
                         <HBox spacing="8" styleClass="input-bar" alignment="CENTER_LEFT">
                             <children>
                                 <Button fx:id="micBtn"    text="🎤" styleClass="icon-btn" onAction="#onVoice"/>
@@ -136,18 +171,43 @@
         
                             <HBox spacing="20" alignment="CENTER">
                                 <children>
-                                    <VBox alignment="CENTER" spacing="4">
-                                        <children><Label text="👥" style="-fx-font-size: 22px;"/><Label text="Mời" style="-fx-font-size: 12px; -fx-text-fill: #374151;"/></children>
-                                    </VBox>
+                                    <VBox fx:id="inviteBox"
+									      alignment="CENTER"
+									      spacing="4"
+									      onMouseClicked="#onInviteClick"
+									      style="-fx-cursor: hand;">
+									    <children>
+									        <Label fx:id="inviteIcon" text="👥" style="-fx-font-size: 22px;"/>
+									        <Label fx:id="inviteLabel" text="Mời" style="-fx-font-size: 12px; -fx-text-fill: #374151;"/>
+									    </children>
+									</VBox>
+
+                                    
                                     <VBox alignment="CENTER" spacing="4">
                                         <children><Label text="🔔" style="-fx-font-size: 22px;"/><Label text="Thông báo" style="-fx-font-size: 12px; -fx-text-fill: #374151;"/></children>
                                     </VBox>
                                     <VBox alignment="CENTER" spacing="4">
                                       <children>
-                                        <Button fx:id="rightSearchTrigger" text="🔍" onAction="#onRightSearchClick" style="-fx-font-size: 22px; -fx-background-color: transparent; -fx-border-color: transparent; -fx-cursor: hand;"/>
+                                        <Button fx:id="rightSearchTrigger"
+										        text="🔍"
+										        onAction="#onRightSearchClick"
+										        styleClass="search-icon-btn"/>
+                                        
                                         <Label text="Tìm kiếm" style="-fx-font-size: 12px; -fx-text-fill: #374151;"/>
                                       </children>
                                     </VBox>
+                                    <VBox fx:id="leaveBox"
+									      alignment="CENTER"
+									      spacing="4"
+									      onMouseClicked="#onLeaveGroupClick"
+									      visible="false" managed="false"
+									      style="-fx-cursor: hand;">
+									    <children>
+									        <Label text="🚪" style="-fx-font-size: 22px;"/>
+									        <Label text="Rời nhóm" style="-fx-font-size: 12px; -fx-text-fill: #374151;"/>
+									    </children>
+									</VBox>
+                                    
                                 </children>
                             </HBox>
         

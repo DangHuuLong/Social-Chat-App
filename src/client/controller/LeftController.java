@@ -44,6 +44,7 @@ public class LeftController {
 
     private final Map<Integer, Label> lastLabels = new HashMap<>();
     private final Map<Integer, User> idToUser = new HashMap<>();
+    private final Map<Integer, GroupViewModel> groupMap = new HashMap<>();
     private Timeline poller;
 
     private final BooleanProperty collapsed = new SimpleBooleanProperty(false);
@@ -55,7 +56,8 @@ public class LeftController {
     // Cache avatar để tránh query lặp
     private final Map<Integer, Image> avatarCache = new HashMap<>();
     private Image defaultAvatar; // lazy-load
-
+    private List<GroupViewModel> groupCache = new ArrayList<>();
+    
     public void bind(
             VBox sidebar,
             VBox chatList,
@@ -140,13 +142,23 @@ public class LeftController {
     public void reloadAll() {
         if (currentUser == null || chatList == null) return;
         try {
+            // 1. load users (1-1)
             List<User> others = UserDAO.listOthers(currentUser.getId());
-            renderUsers(others);
-            if (poller == null) startPollingPresence();
+
+            // 2. load groups cho currentUser
+            //    -> tạm thời LeftController hỏi HomeController hoặc gọi DAO trực tiếp?
+            //    Không nên gọi DAO server trực tiếp từ client nếu nhóm là dữ liệu server-side TCP.
+            //    Vì vậy: cách sạch là:
+            //    - giữ một List<GroupViewModel> cache mà HomeController đã set khi nhận GROUP_LIST_RESULT từ server.
+            //    -> Ta thêm biến groupCache dưới đây.
+            renderAll(others, groupCache);
+
+            if (poller == null) startPollingPresence(); // presence chỉ áp dụng cho users
         } catch (SQLException e) {
             e.printStackTrace();
         }
     }
+
 
     public void searchUsers(String keyword) {
         if (currentUser == null) return;
@@ -198,6 +210,22 @@ public class LeftController {
             }
         });
         return row;
+    }
+    private Image loadGroupAvatar() {
+        try {
+            var url = getClass().getResource("/client/view/images/group.png");
+            if (url != null) {
+                return new Image(url.toExternalForm());
+            }
+        } catch (Exception ignore) {}
+        if (defaultAvatar == null) {
+            defaultAvatar = new Image(
+                Objects.requireNonNull(
+                    getClass().getResource("/client/view/images/default user.png")
+                ).toExternalForm()
+            );
+        }
+        return defaultAvatar;
     }
 
     private Image loadAvatarImage(int userId) {
@@ -432,4 +460,143 @@ public class LeftController {
             return withDot ? " • " + iso : iso;
         }
     }
+    public java.util.List<String> getAllUsernames() {
+        java.util.List<String> list = new java.util.ArrayList<>();
+        for (User u : idToUser.values()) {
+            if (u != null && u.getUsername() != null && !u.getUsername().isBlank()) {
+                list.add(u.getUsername());
+            }
+        }
+        if (currentUser != null && currentUser.getUsername() != null) {
+            String me = currentUser.getUsername();
+            if (!list.contains(me)) {
+                list.add(me);
+            }
+        }
+        return list;
+    }
+    public static class GroupViewModel {
+        public final int groupId;
+        public final String name;
+        public final String owner;
+        public GroupViewModel(int gid, String name, String owner) {
+            this.groupId = gid;
+            this.name = name;
+            this.owner = owner;
+        }
+    }
+    private HBox createGroupItem(GroupViewModel g) {
+        HBox row = new HBox(10);
+        row.getStyleClass().add("chat-item");
+        row.setPadding(new Insets(8));
+        row.setUserData("group:" + g.groupId); // đánh dấu đây là group, không phải user
+
+        // avatar nhóm
+        Image img = loadGroupAvatar();
+        StackPane avatarPane = buildCircularAvatar(img, 40);
+
+        VBox textBox = new VBox(2);
+        HBox.setHgrow(textBox, Priority.ALWAYS);
+
+        Label nameLbl = new Label(g.name);
+        nameLbl.getStyleClass().add("chat-name");
+
+        Label infoLbl = new Label("Nhóm • owner: " + g.owner);
+        infoLbl.getStyleClass().addAll("chat-last", "chat-status-offline");
+
+        textBox.getChildren().addAll(nameLbl, infoLbl);
+
+        textBox.visibleProperty().bind(collapsed.not());
+        textBox.managedProperty().bind(collapsed.not());
+
+        row.getChildren().addAll(avatarPane, textBox);
+
+        // click vào row -> mở hội thoại nhóm
+        row.setOnMouseClicked(ev -> {
+            openGroupConversation(g);
+        });
+
+        return row;
+    }
+
+    private void openGroupConversation(GroupViewModel g) {
+        if (onOpenGroupConversation != null) {
+            onOpenGroupConversation.accept(g);
+        }
+    }
+    private Consumer<GroupViewModel> onOpenGroupConversation;
+    public void setOnOpenGroupConversation(Consumer<GroupViewModel> cb) {
+        this.onOpenGroupConversation = cb;
+    }
+    public void setGroupsForSidebar(java.util.List<GroupViewModel> groups) {
+        groupCache = new ArrayList<>(groups);
+        // sau khi cập nhật cache, re-render
+        renderAll(getAllCurrentUsersSnapshot(), groupCache);
+    }
+
+    // helper để lấy lại list user hiện tại (để không mất user list khi gọi lại)
+    private List<User> getAllCurrentUsersSnapshot() {
+        // ta có idToUser map rồi
+        return new ArrayList<>(idToUser.values());
+    }
+    
+    private void renderAll(List<User> users, List<GroupViewModel> groups) {
+        chatList.getChildren().clear();
+        lastLabels.clear();
+        idToUser.clear();
+        // groupMap clear
+        groupMap.clear();
+
+        // 1. render groups TRƯỚC hay SAU tuỳ bạn muốn.
+        // ví dụ: render groups trước
+        if (groups != null) {
+            for (GroupViewModel g : groups) {
+                groupMap.put(g.groupId, g);
+                chatList.getChildren().add(createGroupItem(g));
+            }
+        }
+
+        // 2. render từng user
+        for (User u : users) {
+            idToUser.put(u.getId(), u);
+            chatList.getChildren().add(createChatItem(u));
+        }
+    }
+    public void addSingleGroupToSidebar(GroupViewModel gvm) {
+        // 1. update cache
+        if (groupCache == null) groupCache = new ArrayList<>();
+        boolean exists = groupCache.stream().anyMatch(x -> x.groupId == gvm.groupId);
+        if (!exists) {
+            groupCache.add(gvm);
+        }
+
+        // 2. add vào UI (trước danh sách user)
+        groupMap.put(gvm.groupId, gvm);
+        HBox row = createGroupItem(gvm);
+
+        // bạn có thể add nó lên đầu
+        chatList.getChildren().add(0, row);
+    }
+    public void removeGroupFromSidebar(int groupId) {
+        // 1. Xóa trong cache
+        if (groupCache != null) {
+            groupCache.removeIf(g -> g.groupId == groupId);
+        }
+
+        // 2. Xóa khỏi map
+        groupMap.remove(groupId);
+
+        // 3. Xóa khỏi giao diện
+        Platform.runLater(() -> {
+            List<Node> toRemove = new ArrayList<>();
+            for (Node n : chatList.getChildren()) {
+                Object ud = n.getUserData();
+                if (ud instanceof String s && s.equals("group:" + groupId)) {
+                    toRemove.add(n);
+                }
+            }
+            chatList.getChildren().removeAll(toRemove);
+        });
+    }
+
 }

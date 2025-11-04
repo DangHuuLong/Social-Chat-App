@@ -700,7 +700,14 @@ public class RightController {
         if (infoName != null) infoName.setText(u.getUsername());
         applyStatusLabel(chatStatus, online, lastSeenIso);
     }
-    
+    public void showGroup(String groupName, Image groupAvatar) {
+        if (infoName != null) infoName.setText(groupName);
+        if (chatStatus != null) chatStatus.setText("Nhóm");
+        if (rightHeaderAvatar != null && groupAvatar != null) {
+            rightHeaderAvatar.setImage(groupAvatar);
+        }
+    }
+
     public void setAvatar(Image img) {
         if (rightHeaderAvatar != null && img != null) {
             rightHeaderAvatar.setImage(img);

@@ -39,7 +39,11 @@ public enum MessageType {
 	ADD_MEMBER((byte)42),
 	REMOVE_MEMBER((byte)43),
 	DELETE_GROUP((byte)44),
-	LIST_MEMBERS((byte)45);
+	LIST_MEMBERS((byte)45),
+	GROUP_MSG((byte)46),
+	GROUP_HISTORY((byte)47),
+	GROUP_SYSTEM((byte)48),
+	GROUP_LIST((byte)49);
     public final byte id;
     MessageType(byte id){ this.id = id; }
 

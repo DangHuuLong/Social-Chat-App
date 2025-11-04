@@ -74,8 +74,18 @@ public class SearchMessageHandler {
             List<client.controller.MidController.MsgView> all = mid.exportMessagesForSearch();
             List<Item> matched = new ArrayList<>();
             for (client.controller.MidController.MsgView v : all) {
-                String norm = normalizeKey(v.text());
-                if (norm.contains(key)) matched.add(new Item(v.epochMillis(), v.incoming(), v.text()));
+            	String norm = normalizeKey(v.text());
+
+            	// ✅ Bỏ phần username nếu có
+            	int colon = norm.indexOf(":");
+            	String msgOnly = (colon >= 0 && colon + 1 < norm.length())
+            	        ? norm.substring(colon + 1).trim()
+            	        : norm;
+
+            	if (msgOnly.contains(key)) {
+            	    matched.add(new Item(v.epochMillis(), v.incoming(), v.text()));
+            	}
+
             }
             matched.sort(Comparator.comparingLong(a -> a.ts));
 

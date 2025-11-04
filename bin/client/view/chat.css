@@ -100,6 +100,47 @@
     -fx-border-color: #E3EEFF;
     -fx-border-radius: 12;
 }
+
+/*=========== REPLY FRAME =========== */
+.reply-bar {
+    -fx-background-color: #F7FAFF; /* giống input-bar */
+    -fx-background-radius: 12;
+    -fx-border-color: #E3EEFF;
+    -fx-border-radius: 12;
+}
+
+.reply-accent {
+    -fx-background-color: #5B8DEF; /* xanh nhạt viền trái */
+    -fx-background-radius: 2 0 0 2;
+}
+
+.reply-title {
+    -fx-font-size: 12px;
+    -fx-text-fill: #6B7280; /* xám nhạt */
+}
+
+.reply-text {
+    -fx-font-size: 13px;
+    -fx-text-fill: #0F172A;
+}
+
+.reply-close {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-font-size: 14px;
+    -fx-cursor: hand;
+    -fx-text-fill: #6B7280;
+}
+
+.reply-close:hover {
+    -fx-text-fill: #111827;
+}
+
+.reply-thumb {
+    -fx-background-color: rgba(0,0,0,0.04);
+    -fx-background-radius: 8;
+}
+/*==================================================== */
 .icon-btn {
     -fx-background-color: #E8F1FF;
     -fx-background-radius: 8;
@@ -107,6 +148,24 @@
     -fx-cursor: hand;
     -fx-border-color: transparent;
 }
+/* Nút tìm kiếm (🔍) trong panel phải */
+.search-icon-btn {
+    -fx-font-size: 22px;
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-cursor: hand;
+    -fx-padding: 0;               /* bỏ padding mặc định của Button */
+    -fx-alignment: center;        /* đảm bảo icon căn giữa */
+    -fx-min-height: 28;
+    -fx-pref-height: 28;
+    -fx-max-height: 28;
+}
+
+.search-icon-btn:hover {
+    -fx-background-color: rgba(0,0,0,0.05);
+    -fx-background-radius: 8;
+}
+
 .icon-btn:hover { -fx-background-color: #DCEAFF; }
 .send-btn {
     -fx-background-color: #1882FF;
@@ -238,6 +297,52 @@
 #incoming-video Button { -fx-background-color: rgba(0,0,0,0.05); -fx-text-fill: -fx-in-text; }
 #outgoing-video Button { -fx-background-color: rgba(255,255,255,0.25); -fx-text-fill: -fx-out-text; }
 #incoming-video Slider, #outgoing-video Slider { -fx-pref-width: 220; }
+/* chip chung */
+.reply-chip {
+    -fx-background-color: rgba(192, 196, 204, 0.18); /* bạc nhạt, hợp cả nền sáng/tối */
+    -fx-background-radius: 8;
+    -fx-border-color: rgba(192, 196, 204, 0.55);     /* viền bạc */
+    -fx-border-radius: 8;
+    -fx-padding: 6 8;
+}
+.reply-chip-title {
+    -fx-font-size: 11px;
+    -fx-text-fill: #8B8F97; /* bạc đậm hơn cho title */
+}
+.reply-chip-text {
+    -fx-font-size: 12px;
+    -fx-text-fill: #2b2f36; /* xám đậm, vẫn đọc được khi đặt trong outgoing (nền xanh) */
+}
+
+/* nếu chip nằm trong bubble outgoing (nền xanh), tăng độ mờ nền cho dễ đọc */
+#outgoing-text .reply-chip,
+#outgoing-image .reply-chip,
+#outgoing-file .reply-chip,
+#outgoing-voice .reply-chip,
+#outgoing-video .reply-chip {
+    -fx-background-color: rgba(255,255,255,0.35);
+    -fx-border-color: rgba(255,255,255,0.55);
+}
+#outgoing-text .reply-chip-title,
+#outgoing-image .reply-chip-title,
+#outgoing-file .reply-chip-title,
+#outgoing-voice .reply-chip-title,
+#outgoing-video .reply-chip-title {
+    -fx-text-fill: rgba(255,255,255,0.95);
+}
+#outgoing-text .reply-chip-text,
+#outgoing-image .reply-chip-text,
+#outgoing-file .reply-chip-text,
+#outgoing-voice .reply-chip-text,
+#outgoing-video .reply-chip-text {
+    -fx-text-fill: white;
+}
+
+/* highlight nhẹ khi auto-scroll đến tin nhắn gốc (pseudo-class do code set) */
+HBox:reply-target, VBox:reply-target {
+    -fx-effect: dropshadow(gaussian, rgba(255,255,255,0.55), 16, 0.25, 0, 0);
+}
+
 .msg-menu {
   -fx-background-color: transparent;
   -fx-background-radius: 6;
@@ -251,7 +356,7 @@
   -fx-text-fill: #111827;
 }
 
-.accordion { -fx-background-color: transparent; }
+
 .menu-pane {
     -fx-background-radius: 10;
     -fx-border-radius: 10;

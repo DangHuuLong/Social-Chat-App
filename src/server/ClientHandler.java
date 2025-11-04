@@ -7,11 +7,14 @@ import common.FrameIO;
 import common.MessageType;
 import server.dao.FileDao;
 import server.dao.GroupDao;
+import server.dao.GroupMessageDao;
 import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -23,6 +26,7 @@ public class ClientHandler implements Runnable {
     private final MessageDao messageDao;
     private final FileDao fileDao;
     private final GroupDao groupDao;
+    private final GroupMessageDao groupMessageDao;
     private DataInputStream binIn;
     private DataOutputStream binOut;
 
@@ -43,17 +47,19 @@ public class ClientHandler implements Runnable {
     // map uuid<->id để tải lại theo uuid phía client cũ
     private static final Map<String, Long> uuidToFileId = new ConcurrentHashMap<>();
     private static final Map<String, Long> uuidToMsgId  = new ConcurrentHashMap<>();
-
+    private static final String REPLY_TAG = "[REPLY:";
+    private Long upReplyTo;
     public ClientHandler(Socket socket,
                          Set<ClientHandler> clients,
                          Map<String, ClientHandler> online,
-                         MessageDao messageDao, FileDao fileDao, GroupDao groupDao) {
+                         MessageDao messageDao, FileDao fileDao, GroupDao groupDao, GroupMessageDao groupmessageDao) {
         this.socket = socket;
         this.clients = clients;
         this.online = online;
         this.messageDao = messageDao;
         this.fileDao = fileDao;
         this.groupDao = groupDao;
+        this.groupMessageDao = groupmessageDao;
     }
 
     @Override
@@ -96,6 +102,9 @@ public class ClientHandler implements Runnable {
                     case REMOVE_MEMBER -> handleRemoveMember(f);
                     case DELETE_GROUP -> handleDeleteGroup(f);
                     case LIST_MEMBERS -> handleListMember(f);
+                    case GROUP_MSG -> handleGroupMessage(f);
+                    case GROUP_HISTORY -> handleGroupHistory(f);
+
                     default -> System.out.println("[SERVER] Unknown frame: " + f.type);
                 }
             }
@@ -124,31 +133,42 @@ public class ClientHandler implements Runnable {
         try {
             var pending = messageDao.loadQueued(username);
             for (var m : pending) sendFrame(m);
-            if (!pending.isEmpty()) sendFrame(Frame.ack("Delivered " + pending.size() + " offline messages"));
+            if (!pending.isEmpty()) {
+                sendFrame(Frame.ack("Delivered " + pending.size() + " offline messages"));
+            }
         } catch (SQLException e) {
             sendFrame(Frame.error("OFFLINE_DELIVERY_FAIL"));
         }
+
+        // 🔥 NEW: gửi danh sách group user đang ở
+        sendGroupListToClient();
     }
+
 
     /* ================= DIRECT MESSAGE ================= */
     private void handleDirectMessage(Frame f) {
         String to = f.recipient;
-        if (to == null || to.isBlank()) {
-            sendFrame(Frame.error("BAD_DM"));
-            return;
-        }
+        if (to == null || to.isBlank()) { sendFrame(Frame.error("BAD_DM")); return; }
+
+        // Tách reply_to khỏi body (nếu có)
+        StringBuilder bodyBuf = new StringBuilder(f.body == null ? "" : f.body);
+        Long replyTo = extractReplyIdAndStrip(bodyBuf);
+        String cleanBody = bodyBuf.toString();
         try {
             long id;
             ClientHandler target = online.get(to);
             if (target != null) {
-                id = messageDao.saveSentReturnId(f);
-                f.transferId = String.valueOf(id);
-                target.sendFrame(f);
+            	// Lưu bản gửi (đã strip prefix), kèm reply_to
+                id = messageDao.saveSentReturnId(f.sender, to, cleanBody, replyTo);
+                // Phát cho người nhận, thêm lại prefix để client render chip
+                Frame deliver = new Frame(MessageType.DM, f.sender, to, prependReplyTag(cleanBody, replyTo));
+                deliver.transferId = String.valueOf(id);
+                target.sendFrame(deliver);
                 Frame ack = Frame.ack("OK DM");
                 ack.transferId = String.valueOf(id);
                 sendFrame(ack);
             } else {
-                id = messageDao.saveQueuedReturnId(f);
+            	 id = messageDao.saveQueuedReturnId(f.sender, to, cleanBody, replyTo);
                 Frame ack = Frame.ack("OK QUEUED");
                 ack.transferId = String.valueOf(id);
                 sendFrame(ack);
@@ -276,12 +296,14 @@ public class ClientHandler implements Runnable {
         try { limit = Integer.parseInt(f.body); } catch (Exception ignore) {}
 
         try {
-            var rows = messageDao.loadConversation(username, peer, limit);
+        	var rows = messageDao.loadConversationWithReply(username, peer, limit);
             for (var r : rows) {
                 boolean incoming = !r.sender.equals(username);
+                String plain = r.body == null ? "" : r.body;
+                String bodyWithReply = prependReplyTag(plain, r.replyTo);
                 String txt = incoming
-                        ? "[HIST IN] " + r.sender + ": " + r.body
-                        : "[HIST OUT] " + r.body;
+                		? "[HIST IN] " + r.sender + ": " + bodyWithReply
+                                : "[HIST OUT] " + bodyWithReply;
                 Frame hist = new Frame(MessageType.HISTORY, r.sender, r.recipient, txt);
                 hist.transferId = String.valueOf(r.id);
                 sendFrame(hist);
@@ -297,7 +319,17 @@ public class ClientHandler implements Runnable {
         try {
             // --- META (FILE_META / AUDIO_META) ---
             if (f.type == MessageType.FILE_META || f.type == MessageType.AUDIO_META) {
+            	// Cho phép prefix [REPLY:<id>] đứng TRƯỚC JSON, sẽ strip ra và lưu vào upReplyTo
                 String body = (f.body == null ? "" : f.body);
+                Long replyToParsed = null;
+                if (body.startsWith("[REPLY:")) {
+                    int end = body.indexOf(']');
+                    if (end > "[REPLY:".length()) {
+                        String num = body.substring("[REPLY:".length(), end);
+                        try { replyToParsed = Long.parseLong(num); } catch (NumberFormatException ignore) {}
+                        body = body.substring(end + 1); // bỏ prefix
+                    }
+                }
                 String to   = pickJson(body, "to");
                 String name = pickJson(body, "name");
                 String mime = pickJson(body, "mime");
@@ -317,7 +349,7 @@ public class ClientHandler implements Runnable {
                 upDeclaredSize = size;
                 upExpectedSeq  = 0;
                 upWritten      = 0L;
-
+                upReplyTo      = replyToParsed; // << quan trọng
                 if (!UPLOAD_DIR.exists()) UPLOAD_DIR.mkdirs();
                 File outFile = new File(UPLOAD_DIR, sanitizeFilename(fid));
                 fileNameMap.put(fid, name);
@@ -328,8 +360,8 @@ public class ClientHandler implements Runnable {
          // --- CHUNK (FILE_CHUNK / AUDIO_CHUNK) ---
             if (f.type == MessageType.FILE_CHUNK || f.type == MessageType.AUDIO_CHUNK) {
                 if (upOut == null || upFileId == null) throw new IOException("CHUNK without META");
-                if (!upFileId.equals(f.transferId)) throw new IOException("Mismatched fileId");
-                if (f.seq != upExpectedSeq) throw new IOException("Out-of-order chunk");
+                if (!upFileId.equals(f.transferId))     throw new IOException("Mismatched fileId");
+                if (f.seq != upExpectedSeq)             throw new IOException("Out-of-order chunk");
 
                 int len = (f.bin == null ? 0 : f.bin.length);
                 if (upWritten + len > Frame.MAX_FILE_BYTES) throw new IOException("File exceeds limit");
@@ -339,27 +371,41 @@ public class ClientHandler implements Runnable {
                 if (f.last) {
                     upOut.flush(); upOut.close(); upOut = null;
 
-                    long msgId = 0L;
+                    long msgId  = 0L;
                     long fileId = 0L;
 
                     try {
                         // 1) Tạo message text đại diện file và lấy messageId
-                        Frame fileMsg = new Frame(MessageType.DM, username, upToUser, "[FILE] " + upOrigName);
-                        msgId = messageDao.saveSentReturnId(fileMsg);
+//                      LƯU Ý: lưu *không có* prefix [REPLY], thay vào đó truyền reply_to qua DAO
+                        String fileBody = "[FILE] " + upOrigName;
+
+                        // dùng overload mới có replyTo
+                        msgId = messageDao.saveSentReturnId(
+                                username,                // sender
+                                upToUser,                // recipient
+                                fileBody,                // body thuần
+                                upReplyTo                // reply_to (nullable)
+                        );
 
                         // 2) Lưu metadata file và lấy fileId
                         String filePath = new File(UPLOAD_DIR, sanitizeFilename(upFileId)).getAbsolutePath();
                         fileId = fileDao.save(msgId, upOrigName, filePath, upMime, upWritten);
-
+                        
+                        System.out.println("[FILE/SAVE] sender=" + username
+                                + " to=" + upToUser
+                                + " msgId=" + msgId
+                                + " fileId=" + fileId
+                                + " origName=" + upOrigName
+                                + " mime=" + upMime
+                                + " bytes=" + upWritten
+                                + " replyTo=" + upReplyTo);
                         if (fileId > 0) uuidToFileId.put(upFileId, fileId);
                         if (msgId  > 0) uuidToMsgId.put(upFileId, msgId);
                     } catch (SQLException sqle) {
                         System.err.println("[DB] Failed to save file metadata: " + sqle.getMessage());
                     }
 
-                    // 3) Gửi ACK cho client GỬI, có kèm messageId + fileId
-                    //    - giữ nguyên transferId = uuid để client cũ không vỡ
-                    //    - body dạng JSON dễ parse trên client
+                 // 3) Gửi ACK cho client GỬI: giữ nguyên transferId = uuid; body = JSON
                     String ackJson = "{"
                             + "\"status\":\"FILE_SAVED\","
                             + "\"messageId\":" + msgId + ","
@@ -369,10 +415,10 @@ public class ClientHandler implements Runnable {
                             + "}";
 
                     Frame ack = Frame.ack(ackJson);
-                    ack.transferId = upFileId; // uuid bên client
+                    ack.transferId = upFileId; // uuid
                     sendFrame(ack);
 
-                    // 4) Push sự kiện cho người nhận (giữ nguyên như cũ)
+                    // 4) Push sự kiện cho người nhận (realtime)
                     if (upToUser != null && !upToUser.isBlank()) {
                         ClientHandler target = online.get(upToUser);
                         if (target != null) {
@@ -384,18 +430,30 @@ public class ClientHandler implements Runnable {
                                     + "\"id\":\""   + escJson(upFileId) + "\","
                                     + "\"fileId\":" + fileId + ","
                                     + "\"messageId\":" + msgId + ","
+                                    + "\"replyTo\":" + (upReplyTo == null ? "null" : upReplyTo) + ","  // << thêm replyTo
                                     + "\"name\":\"" + escJson(savedName) + "\","
                                     + "\"mime\":\"" + escJson(upMime) + "\","
                                     + "\"bytes\":"  + upWritten
                                     + "}";
                             Frame evt = new Frame(MessageType.FILE_EVT, username, upToUser, json);
+                            System.out.println("[FILE/EVT] push to=" + upToUser
+                                    + " uuid=" + upFileId
+                                    + " fileId=" + fileId
+                                    + " messageId=" + msgId
+                                    + " replyTo=" + upReplyTo);
                             target.sendFrame(evt);
                         }
                     }
 
-                    // 5) Reset state
-                    upFileId = null; upToUser = null; upOrigName = null; upMime = null;
-                    upDeclaredSize = 0; upExpectedSeq = 0; upWritten = 0;
+                 // 5) Reset state phiên upload
+                    upFileId = null;
+                    upToUser = null;
+                    upOrigName = null;
+                    upMime = null;
+                    upDeclaredSize = 0;
+                    upExpectedSeq = 0;
+                    upWritten = 0;
+                    upReplyTo = null; // << reset
                 }
                 return;
             }
@@ -403,7 +461,7 @@ public class ClientHandler implements Runnable {
 
         } catch (IOException e) {
             try { if (upOut != null) upOut.close(); } catch (Exception ignore) {}
-            upOut = null; upFileId = null;
+            upOut = null; upFileId = null; upReplyTo = null;
             sendFrame(Frame.error("FILE_FAIL"));
         }
     }
@@ -412,7 +470,7 @@ public class ClientHandler implements Runnable {
     private void handleDownloadFile(Frame f) {
         try {
             String body = (f.body == null) ? "" : f.body.trim();
-
+            System.out.println("[DL] request body=" + body);
             Long fileId = null;
             Long messageId = null;
 
@@ -437,19 +495,37 @@ public class ClientHandler implements Runnable {
                 if (fileId == null && mappedFileId != null) fileId = mappedFileId;
                 if (messageId == null && mappedMsgId  != null) messageId = mappedMsgId;
             }
-
+            System.out.println("[DL] resolved fileId=" + fileId + " messageId=" + messageId + " legacyUuid=" + uuid);
             FileDao.FileRecord fileRow = null;
             if (fileId != null && fileId > 0) fileRow = fileDao.getById(fileId);
             if (fileRow == null && messageId != null && messageId > 0) fileRow = fileDao.getByMessageId(messageId);
 
-            if (fileRow == null) { sendFrame(Frame.error("INVALID_FILE_ID")); return; }
+            if (fileRow == null) { 
+            	System.out.println("[DL] fileRow=null (not found by fileId/messageId)");
+            	sendFrame(Frame.error("INVALID_FILE_ID")); 
+            	return; 
+            }
+            System.out.println("[DL] fileRow id=" + fileRow.id
+                    + " msgId=" + fileRow.messageId
+                    + " name=" + fileRow.fileName
+                    + " mime=" + fileRow.mimeType
+                    + " path=" + fileRow.filePath);
 
             File file = new File(fileRow.filePath);
             if (!file.exists()) { sendFrame(Frame.error("FILE_NOT_FOUND_DISK")); return; }
 
             String mime = (fileRow.mimeType != null) ? fileRow.mimeType : "application/octet-stream";
             String name = (fileRow.fileName  != null) ? fileRow.fileName  : ("file-" + fileRow.id);
-
+            Long replyTo = null;
+            long msgIdForFile = fileRow.messageId;
+            try {
+                if (msgIdForFile > 0) {
+                    replyTo = messageDao.getReplyToByMessageId(msgIdForFile);
+                }
+                System.out.println("[DL] replyTo for messageId=" + msgIdForFile + " -> " + replyTo);
+            } catch (SQLException e) {
+                System.out.println("[DL] getReplyToByMessageId failed: " + e.getMessage());
+            }
             String metaJson = "{"
                     + "\"from\":\"" + escJson(username) + "\","
                     + "\"to\":\"\","
@@ -457,8 +533,13 @@ public class ClientHandler implements Runnable {
                     + "\"mime\":\"" + escJson(mime) + "\","
                     + "\"fileId\":\"" + fileRow.id + "\","
                     + "\"messageId\":\"" + (fileRow.messageId) + "\","
+                    + "\"replyTo\":" + (replyTo == null ? "null" : replyTo) + "," 
                     + "\"size\":" + file.length()
                     + "}";
+            System.out.println("[DL] send FILE_META fileId=" + fileRow.id
+                    + " msgId=" + fileRow.messageId
+                    + " replyTo=" + replyTo
+                    + " size=" + file.length());
             sendFrame(new Frame(MessageType.FILE_META, username, "", metaJson));
 
             try (InputStream fis = new BufferedInputStream(new FileInputStream(file))) {
@@ -466,6 +547,7 @@ public class ClientHandler implements Runnable {
                 int n, seq = 0;
                 long rem = file.length();
                 while ((n = fis.read(buf)) != -1) {
+                	if (seq == 0) System.out.println("[DL] start streaming fileId=" + fileRow.id + " total=" + file.length());
                     rem -= n;
                     boolean last = (rem == 0);
                     byte[] slice = (n == buf.length) ? buf : Arrays.copyOf(buf, n);
@@ -475,6 +557,7 @@ public class ClientHandler implements Runnable {
                     ch.last = last;
                     ch.bin = slice;
                     sendFrame(ch);
+                    if (last) System.out.println("[DL] done streaming fileId=" + fileRow.id + " chunks=" + (seq));
                 }
             }
         } catch (SQLException e) {
@@ -591,11 +674,18 @@ public class ClientHandler implements Runnable {
             int groupId = groupDao.createGroup(username, name);
 
             if (groupId > 0) {
-                sendFrame(Frame.ack("OK GROUP_CREATED " + groupId));
+            	String respJson = "{"
+            	        + "\"status\":\"OK_GROUP_CREATED\","
+            	        + "\"group_id\":" + groupId + ","
+            	        + "\"name\":\"" + escJson(name) + "\","
+            	        + "\"owner\":\"" + escJson(username) + "\""
+            	        + "}";
+            	    sendFrame(Frame.ack(respJson));
             } else {
                 sendFrame(Frame.error("GROUP_CREATE_FAIL"));
             }
         } catch (SQLException e) {
+        	e.printStackTrace();
             sendFrame(Frame.error("DB_ERROR_CREATE_GROUP"));
         }
     }
@@ -605,73 +695,185 @@ public class ClientHandler implements Runnable {
         try {
             String body = f.body;
             int groupId = Integer.parseInt(jsonGet(body, "group_id"));
-            String newMember = jsonGet(body, "username");
+            List<String> newMembers = extractArray(body, "members");
 
-            if (newMember == null || newMember.isBlank()) {
-                sendFrame(Frame.error("MISSING_MEMBER"));
+            if (newMembers == null || newMembers.isEmpty()) {
+                sendFrame(Frame.error("NO_MEMBERS_PROVIDED"));
                 return;
             }
 
-            boolean added = groupDao.addMember(groupId, newMember);
-            if (added) {
-                sendFrame(Frame.ack("OK MEMBER_ADDED " + newMember));
+            // 1. Permission: người đang gọi phải là owner
+            boolean isOwner = groupDao.isOwner(groupId, username);
+            boolean isMember = groupDao.isMember(groupId, username);
 
-                // Notify if user is online
-                ClientHandler target = online.get(newMember);
-                if (target != null) {
-                    target.sendFrame(Frame.ack("You were added to group " + groupId + " by " + username));
-                }
-            } else {
-                sendFrame(Frame.error("ADD_MEMBER_FAIL"));
+            if (!isOwner && !isMember) {
+                // 🔧 Add helpful debug
+                System.out.println("[DEBUG] Permission denied for user=" + username + " group=" + groupId);
+                System.out.println("isOwner=" + isOwner + ", isMember=" + isMember);
+                sendFrame(Frame.error("PERMISSION_DENIED_ADD"));
+                return;
             }
+
+
+            // 2. Add từng member
+            List<String> actuallyAdded = new ArrayList<>();
+            for (String m : newMembers) {
+                if (groupDao.addMember(groupId, m)) {
+                    actuallyAdded.add(m);
+
+                    // nếu user vừa được thêm đang online
+                    ClientHandler target = online.get(m);
+                    if (target != null) {
+                        // 2a. báo cho người đó biết họ đã được add
+                        String notice = "{"
+                                + "\"event\":\"ADDED_TO_GROUP\","
+                                + "\"group_id\":"+groupId+","
+                                + "\"by\":\""+escJson(username)+"\""
+                                + "}";
+                        Frame noticeFrame = Frame.ack(notice);
+                        target.sendFrame(noticeFrame);
+
+                        // 2b. đẩy lại danh sách group đầy đủ cho người đó
+                        // để client của họ cập nhật sidebar ngay lập tức
+                        target.sendGroupListToClient();
+                    }
+                }
+            }
+
+            // 3. Broadcast system message tới các thành viên hiện tại trong group
+            if (!actuallyAdded.isEmpty()) {
+                var membersNow = groupDao.listMembers(groupId);
+                String addedJoined = String.join(",", actuallyAdded);
+
+                for (String memberName : membersNow) {
+                    ClientHandler h = online.get(memberName);
+                    if (h != null) {
+                        Frame sys = new Frame(
+                            MessageType.GROUP_SYSTEM,
+                            "system",
+                            String.valueOf(groupId),
+                            username + " added " + addedJoined + " to the group"
+                        );
+                        h.sendFrame(sys);
+                    }
+                }
+            }
+
+            // 4. ACK cho người gọi (owner – người bấm "Tạo nhóm"/"Thêm thành viên")
+            Frame ack = Frame.ack("OK ADD_MEMBER " + actuallyAdded.size());
+            sendFrame(ack);
+
         } catch (Exception e) {
             sendFrame(Frame.error("ADD_MEMBER_EXCEPTION"));
+            e.printStackTrace();
         }
     }
 
-    /* ================= REMOVE MEMBER ================= */
+
+
+
     private void handleRemoveMember(Frame f) {
         try {
             String body = f.body;
             int groupId = Integer.parseInt(jsonGet(body, "group_id"));
-            String member = jsonGet(body, "username");
+            String targetUser = jsonGet(body, "username");
 
-            if (member == null || member.isBlank()) {
+            if (targetUser == null || targetUser.isBlank()) {
                 sendFrame(Frame.error("MISSING_MEMBER"));
                 return;
             }
 
-            boolean removed = groupDao.removeMember(groupId, member);
-            if (removed) {
-                sendFrame(Frame.ack("OK MEMBER_REMOVED " + member));
+            boolean isOwnerLeaving = groupDao.isOwner(groupId, targetUser);
 
-                ClientHandler target = online.get(member);
-                if (target != null) {
-                    target.sendFrame(Frame.ack("You were removed from group " + groupId + " by " + username));
-                }
-            } else {
+            // ✅ 1️⃣ Xóa thành viên khỏi nhóm
+            boolean removed = groupDao.removeMember(groupId, targetUser);
+            if (!removed) {
                 sendFrame(Frame.error("REMOVE_MEMBER_FAIL"));
+                return;
             }
+
+            // ✅ 2️⃣ Nếu owner rời nhóm
+            if (isOwnerLeaving) {
+                List<String> remaining = groupDao.listMembersOrderByJoinTime(groupId);
+
+                if (remaining == null || remaining.isEmpty()) {
+                    // ❌ Không còn ai → xóa nhóm
+                    groupDao.deleteGroup(groupId, targetUser);
+                    sendFrame(Frame.ack("OK GROUP_DELETED_EMPTY"));
+                    System.out.println("[GROUP] Owner left, no members left -> group deleted: " + groupId);
+                    return;
+                }
+
+                // ✅ Còn thành viên khác → chọn người sớm nhất làm owner mới
+                String newOwner = remaining.get(0);
+                groupDao.updateOwner(groupId, newOwner);
+
+                // Gửi thông báo nội bộ
+                for (String m : remaining) {
+                    ClientHandler h = online.get(m);
+                    if (h != null) {
+                        Frame notice = new Frame(
+                            MessageType.GROUP_SYSTEM,
+                            "system",
+                            String.valueOf(groupId),
+                            "👑 Owner " + targetUser + " rời nhóm — owner mới là " + newOwner
+                        );
+                        h.sendFrame(notice);
+                    }
+                }
+
+                sendFrame(Frame.ack("OK OWNER_CHANGED_TO " + newOwner));
+                return;
+            }
+
+            // ✅ 3️⃣ Nếu là member bình thường tự rời
+            sendFrame(Frame.ack("OK MEMBER_LEFT " + targetUser));
+
+            // Thông báo cho các thành viên còn lại
+            List<String> remaining = groupDao.listMembers(groupId);
+            for (String m : remaining) {
+                ClientHandler h = online.get(m);
+                if (h != null) {
+                    Frame sys = new Frame(
+                        MessageType.GROUP_SYSTEM,
+                        "system",
+                        String.valueOf(groupId),
+                        targetUser + " đã rời nhóm."
+                    );
+                    h.sendFrame(sys);
+                }
+            }
+
         } catch (Exception e) {
+            e.printStackTrace();
             sendFrame(Frame.error("REMOVE_MEMBER_EXCEPTION"));
         }
     }
 
-    /* ================= DELETE GROUP (only owner) ================= */
+
     private void handleDeleteGroup(Frame f) {
         try {
             int groupId = Integer.parseInt(f.body.trim());
+
+            // lấy danh sách members TRƯỚC KHI XÓA
+            var members = groupDao.listMembers(groupId);
+
             boolean ok = groupDao.deleteGroup(groupId, username);
 
             if (ok) {
                 sendFrame(Frame.ack("OK GROUP_DELETED " + groupId));
 
-                // Notify members (if online)
-                var members = groupDao.listMembers(groupId);
                 for (String m : members) {
+                    if (m.equals(username)) continue;
                     ClientHandler target = online.get(m);
                     if (target != null) {
-                        target.sendFrame(Frame.ack("Group " + groupId + " deleted by owner " + username));
+                        Frame sys = new Frame(
+                            MessageType.GROUP_SYSTEM,
+                            "system",
+                            String.valueOf(groupId),
+                            "Group " + groupId + " was deleted by owner " + username
+                        );
+                        target.sendFrame(sys);
                     }
                 }
             } else {
@@ -681,6 +883,7 @@ public class ClientHandler implements Runnable {
             sendFrame(Frame.error("DELETE_GROUP_FAIL"));
         }
     }
+
     /* ================= LIST MEMBERS (only owner) ================= */
     private void handleListMember(Frame f) {
     	try {
@@ -715,6 +918,129 @@ public class ClientHandler implements Runnable {
         }
     	
     }
+ // gửi danh sách tất cả group mà user hiện tại (this.username) đang ở trong
+    public void sendGroupListToClient() {
+        try {
+            List<common.Group> groups = groupDao.listGroupsForUser(username);
+
+            for (common.Group g : groups) {
+                // NOTE: common.Group trong GroupDao.listGroupsForUser(...) được tạo như:
+                // new Group(rs.getInt("id"), rs.getString("name"), rs.getString("owner"))
+                // => mình giả định class common.Group có getter kiểu getId(), getName(), getOwner()
+                // Nếu bạn dùng record Group(int id, String name, String owner)
+                // thì đổi g.getId() -> g.id(), v.v.
+
+                int gid         = g.getId();
+                String gname    = g.getName();
+                String gowner   = g.getOwner();
+
+                String json = "{"
+                    + "\"group_id\":" + gid + ","
+                    + "\"name\":\"" + escJson(gname) + "\","
+                    + "\"owner\":\"" + escJson(gowner) + "\""
+                    + "}";
+
+                Frame out = new Frame(
+                    MessageType.GROUP_LIST,
+                    "server",
+                    username,
+                    json
+                );
+                sendFrame(out);
+            }
+
+            // báo cho client biết đã gửi xong list
+            Frame done = Frame.ack("OK GROUP_LIST " + groups.size());
+            sendFrame(done);
+
+        } catch (SQLException e) {
+            sendFrame(Frame.error("DB_GROUP_LIST_FAIL"));
+        } catch (Exception e) {
+            sendFrame(Frame.error("GROUP_LIST_FAIL"));
+        }
+    }
+
+    /* ================= GROUP MESSAGE ================= */
+    private void handleGroupMessage(Frame f) {
+        try {
+            System.out.println("[SERVER] handleGroupMessage f=" + f);
+
+            if (f == null) throw new RuntimeException("Frame null");
+            System.out.println("[SERVER] recipient=" + f.recipient + ", sender=" + username + ", body=" + f.body);
+
+            int groupId = Integer.parseInt(f.recipient); // <== kiểm tra lỗi parse
+            System.out.println("[SERVER] parsed groupId=" + groupId);
+
+            String msgBody = (f.body == null) ? "" : f.body.trim();
+            System.out.println("[SERVER] msgBody='" + msgBody + "'");
+
+            if (groupDao == null) throw new RuntimeException("groupDao is null");
+            if (groupMessageDao == null) throw new RuntimeException("groupMessageDao is null");
+
+            System.out.println("[SERVER] checking membership...");
+            if (!groupDao.isMember(groupId, username)) {
+                System.out.println("[SERVER] user not member of group");
+                sendFrame(Frame.error("NOT_GROUP_MEMBER"));
+                return;
+            }
+
+            System.out.println("[SERVER] saving message...");
+            long msgId = groupMessageDao.saveMessage(groupId, username, msgBody);
+            System.out.println("[SERVER] message saved with id=" + msgId);
+
+            var members = groupDao.listMembers(groupId);
+            System.out.println("[SERVER] members=" + members);
+
+            for (String m : members) {
+                System.out.println("[SERVER] pushing to member " + m);
+                if (m.equals(username)) continue;
+                ClientHandler target = online.get(m);
+                if (target != null) {
+                    Frame gf = new Frame(MessageType.GROUP_MSG, username, String.valueOf(groupId), msgBody);
+                    gf.transferId = String.valueOf(msgId);
+                    target.sendFrame(gf);
+                }
+            }
+
+            System.out.println("[SERVER] ack to sender");
+            sendFrame(Frame.ack("OK GROUP_MSG_SENT " + msgId));
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("DB_GROUP_MSG_FAIL"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("GROUP_MSG_FAIL"));
+        }
+    }
+
+    /* ================= GROUP HISTORY ================= */
+    private void handleGroupHistory(Frame f) {
+        try {
+        	int groupId = Integer.parseInt(f.recipient.replace("group:", ""));
+            int limit = 50;
+            try { limit = Integer.parseInt(f.body); } catch (Exception ignore) {}
+
+            if (!groupDao.isMember(groupId, username)) {
+                sendFrame(Frame.error("NOT_GROUP_MEMBER"));
+                return;
+            }
+
+            var messages = groupMessageDao.loadRecentMessages(groupId, limit);
+            for (String line : messages) {
+                Frame hist = new Frame(MessageType.GROUP_HISTORY, "server", String.valueOf(groupId), line);
+                sendFrame(hist);
+            }
+
+            sendFrame(Frame.ack("OK GROUP_HISTORY " + messages.size()));
+
+        } catch (SQLException e) {
+            sendFrame(Frame.error("DB_GROUP_HISTORY_FAIL"));
+        } catch (Exception e) {
+            sendFrame(Frame.error("GROUP_HISTORY_FAIL"));
+        }
+    }
+
     /* ================= Helpers ================= */
     private void broadcast(String msg, boolean excludeSelf) {
         for (ClientHandler c : clients) {
@@ -789,4 +1115,43 @@ public class ClientHandler implements Runnable {
         if (s == null || s.isBlank()) return def;
         try { return Long.parseLong(s); } catch (Exception e) { return def; }
     }
+    /*HEPLER FOR REPLY*/
+    private static Long extractReplyIdAndStrip(StringBuilder bodyInOut) {
+        if (bodyInOut == null) return null;
+        String s = bodyInOut.toString();
+        if (s.startsWith(REPLY_TAG)) {
+            int end = s.indexOf(']');
+            if (end > REPLY_TAG.length()) {
+                String num = s.substring(REPLY_TAG.length(), end);
+                try {
+                    long id = Long.parseLong(num);
+                    bodyInOut.setLength(0);
+                    bodyInOut.append(s.substring(end + 1)); // strip tag
+                    return id;
+                } catch (NumberFormatException ignore) {}
+            }
+        }
+        return null;
+    }
+
+    private static String prependReplyTag(String body, Long replyTo) {
+        if (replyTo == null || replyTo <= 0) return body;
+        return "[REPLY:" + replyTo + "]" + (body == null ? "" : body);
+    }
+    private static List<String> extractArray(String json, String key) {
+        List<String> list = new ArrayList<>();
+        if (json == null) return list;
+        int start = json.indexOf("\"" + key + "\"");
+        if (start < 0) return list;
+        start = json.indexOf('[', start);
+        int end = json.indexOf(']', start);
+        if (start < 0 || end < 0) return list;
+        String arr = json.substring(start + 1, end);
+        for (String item : arr.split(",")) {
+            item = item.replaceAll("[\"\\s]", "");
+            if (!item.isEmpty()) list.add(item);
+        }
+        return list;
+    }
+
 }

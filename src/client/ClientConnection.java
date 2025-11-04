@@ -254,7 +254,24 @@ public class ClientConnection {
                 CompletableFuture<Frame> fut = new CompletableFuture<>();
                 pendingAcks.put(fFileId, fut);
 
-                Frame meta = Frame.fileMeta(fFrom, fTo, fName, fMime, fFileId, fSize);
+             // ★ CHANGED: TẠO META THỦ CÔNG + prepend [REPLY:...] nếu có
+                Long replyTo = currentReplyToIdFromUI();
+                String metaJson = "{"
+                        + "\"to\":\""   + esc(fTo)   + "\","
+                        + "\"name\":\"" + esc(fName) + "\","
+                        + "\"mime\":\"" + esc(fMime) + "\","
+                        + "\"fileId\":\"" + esc(fFileId) + "\","
+                        + "\"size\":" + fSize
+                        + "}";
+
+                // KHÔNG có ký tự nào trước “[REPLY:...]”
+                String wireBody = (replyTo != null && replyTo > 0)
+                        ? "[REPLY:" + replyTo + "]" + metaJson
+                        : metaJson;
+
+                // Thay vì Frame.fileMeta(...), tạo frame trực tiếp để giữ nguyên body
+                Frame meta = new Frame(common.MessageType.FILE_META, fFrom, fTo, wireBody);
+                meta.transferId = fFileId;
                 sendFrame(meta);
 
                 try (InputStream fis = new BufferedInputStream(new FileInputStream(file))) {
@@ -318,7 +335,23 @@ public class ClientConnection {
 
         String audioId = java.util.UUID.randomUUID().toString();
 
-        Frame meta = Frame.audioMeta(from, to, codec, sampleRate, durationSec, audioId, audioBytes.length);
+     // ★ CHANGED: META thủ công + prepend [REPLY:...]
+        Long replyTo = currentReplyToIdFromUI();
+        String metaJson = "{"
+                + "\"to\":\"" + esc(to) + "\","
+                + "\"codec\":\"" + esc(codec) + "\","
+                + "\"sampleRate\":" + sampleRate + ","
+                + "\"duration\":" + durationSec + ","
+                + "\"fileId\":\"" + esc(audioId) + "\","
+                + "\"size\":" + audioBytes.length
+                + "}";
+
+        String wireBody = (replyTo != null && replyTo > 0)
+                ? "[REPLY:" + replyTo + "]" + metaJson
+                : metaJson;
+
+        Frame meta = new Frame(common.MessageType.AUDIO_META, from, to, wireBody);
+        meta.transferId = audioId;
         sendFrame(meta);
 
         int off = 0, seq = 0;
@@ -346,7 +379,22 @@ public class ClientConnection {
                 CompletableFuture<Frame> fut = new CompletableFuture<>();
                 pendingAcks.put(audioId, fut);
 
-                Frame meta = Frame.audioMeta(from, to, codec, sampleRate, durationSec, audioId, audioBytes.length);
+                Long replyTo = currentReplyToIdFromUI();
+                String metaJson = "{"
+                        + "\"to\":\"" + esc(to) + "\","
+                        + "\"codec\":\"" + esc(codec) + "\","
+                        + "\"sampleRate\":" + sampleRate + ","
+                        + "\"duration\":" + durationSec + ","
+                        + "\"fileId\":\"" + esc(audioId) + "\","
+                        + "\"size\":" + audioBytes.length
+                        + "}";
+
+                String wireBody = (replyTo != null && replyTo > 0)
+                        ? "[REPLY:" + replyTo + "]" + metaJson
+                        : metaJson;
+
+                Frame meta = new Frame(common.MessageType.AUDIO_META, from, to, wireBody);
+                meta.transferId = audioId;
                 sendFrame(meta);
 
                 int off = 0, seq = 0;
@@ -378,6 +426,10 @@ public class ClientConnection {
         if (midController != null) {
         }
         throw lastEx != null ? lastEx : new IOException("Failed to send audio after " + retries + " attempts");
+    }
+    public void groupHistory(String username, String groupId, int limit) throws IOException {
+        Frame f = new Frame(MessageType.GROUP_HISTORY, username, "group:" + groupId, String.valueOf(limit));
+        sendFrame(f);
     }
 
     private static void ensureSendableFile(File file) throws IOException {
@@ -436,4 +488,38 @@ public class ClientConnection {
         if (s == null || s.isBlank()) return def;
         try { return Long.parseLong(s); } catch (Exception e) { return def; }
     }
+    /*REPLY*/
+    // ★ NEW: escape cho JSON chuỗi đơn giản
+       private static String esc(String s) {
+           if (s == null) return "";
+           return s.replace("\\", "\\\\").replace("\"", "\\\"");
+       }
+
+       // ★ NEW: lấy replyTo hiện tại từ UI (MidController -> replyingRow)
+       private Long currentReplyToIdFromUI() {
+           if (midController == null) return null;
+           try {
+               // MidController đã có hasReplyContext() + getReplyingRow()
+               if (!midController.hasReplyContext()) return null;
+               HBox replyingRow = midController.getReplyingRow();
+               if (replyingRow == null) return null;
+
+               // Ưu tiên messageId (userData)
+               Object ud = replyingRow.getUserData();
+               if (ud != null) {
+                   try { return Long.parseLong(String.valueOf(ud)); } catch (Exception ignore) {}
+               }
+               // fallback: nếu file bubble, thử lấy từ "fid"
+               Object fidProp = replyingRow.getProperties().get("fid");
+               if (fidProp != null) {
+                   try { return Long.parseLong(String.valueOf(fidProp)); } catch (Exception ignore) {}
+               }
+               // fallback 2: nếu chip reply đã lưu sẵn "replyTo"
+               Object chip = replyingRow.getProperties().get("replyTo");
+               if (chip != null) {
+                   try { return Long.parseLong(String.valueOf(chip)); } catch (Exception ignore) {}
+               }
+           } catch (Exception ignore) {}
+           return null;
+       }
 }

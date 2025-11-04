@@ -4,7 +4,7 @@ import java.sql.*;
 
 public class DBConnection {
 	private static final String URL =
-		    "jdbc:mysql://localhost:3306/test"
+		    "jdbc:mysql://localhost:3306/socialchatapp"
 		  + "?useSSL=false"
 		  + "&allowPublicKeyRetrieval=true"
 		  + "&serverTimezone=UTC";
@@ -17,6 +17,9 @@ public class DBConnection {
         } catch (ClassNotFoundException e) {
             throw new SQLException("MySQL driver not found", e);
         }
-        return DriverManager.getConnection(URL, USER, PASS);
+        Connection conn = DriverManager.getConnection(URL, USER, PASS);
+        conn.setAutoCommit(true); // ✅ ensure auto-commit
+        return conn;
     }
+
 }

@@ -3,12 +3,13 @@ package client.controller.mid;
 import common.Frame;
 import javafx.application.Platform;
 import javafx.scene.layout.HBox;
+
 import javafx.scene.layout.VBox;
 import javafx.scene.image.Image;
 import javafx.scene.image.WritableImage;
 import client.controller.MidController;
 import javafx.scene.Node;
-
+import javafx.geometry.Pos;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -24,7 +25,7 @@ public class MessageHandler {
     // === STATE: chống render trùng CallLog & chống tải trùng file ===
     private final Set<String> requestedDownloads =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
-
+    private static final String REPLY_TAG = "[REPLY:";
     public boolean markDownloadRequested(String key) {
         return requestedDownloads.add(key);
     }
@@ -51,16 +52,32 @@ public class MessageHandler {
             case FILE_HISTORY -> handleFileHistoryFrame(f);
             case ERROR -> Platform.runLater(() -> controller.showErrorAlert("Lỗi: " + f.body));
             case SMART_REPLY -> handleSmartReplyFrame(f);
+            case GROUP_MSG -> handleGroupMsgFrame(f);
+            case GROUP_HISTORY -> handleGroupHistoryFrame(f);
 
         }
     }
 
     // ===================== PRIVATE HANDLERS =====================
-
+    private static String[] parseReplyPrefix(String body) {
+        // return [strippedBody, replyIdOrNull]
+        if (body == null) return new String[]{"", null};
+        if (body.startsWith(REPLY_TAG)) {
+            int end = body.indexOf(']');
+            if (end > REPLY_TAG.length()) {
+                String num = body.substring(REPLY_TAG.length(), end);
+                String rest = body.substring(end + 1);
+                return new String[]{rest, num};
+            }
+        }
+        return new String[]{body, null};
+    }
     private void handleDmFrame(Frame f, String openPeer) {
         String sender = f.sender;
         String body = f.body == null ? "" : f.body;
-
+        String[] pr = parseReplyPrefix(body);
+        String clean = pr[0];
+        String replyToId = pr[1];
         if (body.startsWith("[CALLLOG]")) {
             if (openPeer != null && openPeer.equals(sender)) {
                 CallLogData d = parseCallLog(body);
@@ -70,7 +87,11 @@ public class MessageHandler {
         }
 
         if (openPeer != null && openPeer.equals(sender)) {
-            controller.addTextMessage(body, true, f.transferId);
+        	HBox row = controller.addTextMessage(clean, true, f.transferId);
+        	if (replyToId != null) {
+        	    row.getProperties().put("replyTo", replyToId);
+        	    new UIMessageHandler(controller).attachReplyChipById(row, /*incoming=*/true, replyToId);
+        	}
         }
     }
 
@@ -94,6 +115,9 @@ public class MessageHandler {
     }
 
     private void handleHistoryContent(String body, Object transferId, boolean incoming) {
+    	String[] pr = parseReplyPrefix(body);
+        String clean = pr[0];
+        String replyToId = pr[1];
         if (body.startsWith("[CALLLOG]")) {
             CallLogData d = parseCallLog(body);
             renderCallLogOnce(d, incoming);
@@ -101,51 +125,57 @@ public class MessageHandler {
         }
 
         long msgId = 0L;
-        try {
-            msgId = Long.parseLong(String.valueOf(transferId));
-        } catch (Exception ignore) {}
+        try { msgId = Long.parseLong(String.valueOf(transferId)); } catch (Exception ignore) {}
         String msgIdStr = (msgId > 0 ? String.valueOf(msgId) : null);
 
-        if (body.startsWith("[FILE]")) {
-            String name = body.substring(6).trim();
+     // >>> DÙNG clean ĐỂ PHÂN LOẠI <<<
+        String head = (clean == null) ? "" : clean;
+
+        if (head.startsWith("[FILE]")) {
+            String name = head.substring(6).trim();
             String meta = "";
             HBox row = controller.addFileMessage(name, meta, incoming, msgIdStr);
-            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-            if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                String key = String.valueOf(msgId);
-                if (markDownloadRequested(key)) {
-                    try {
-                        controller.getConnection().downloadFileByMsgId(msgId);
-                    } catch (IOException ignore) {}
-                }
+            if (replyToId != null && row.getProperties().get("replyTo") == null) {
+                row.getProperties().put("replyTo", replyToId);
+                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
             }
-        } else if (body.startsWith("[AUDIO]")) {
+            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+            if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
+                String key = String.valueOf(msgId);
+                if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
+            }
+
+        } else if (head.startsWith("[AUDIO]")) {
             String dur = "--:--";
             HBox row = controller.addVoiceMessage(dur, incoming, msgIdStr);
-            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-            if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                String key = String.valueOf(msgId);
-                if (markDownloadRequested(key)) {
-                    try {
-                        controller.getConnection().downloadFileByMsgId(msgId);
-                    } catch (IOException ignore) {}
-                }
+            if (replyToId != null && row.getProperties().get("replyTo") == null) {
+                row.getProperties().put("replyTo", replyToId);
+                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
             }
-        } else if (body.startsWith("[VIDEO]")) {
-            String name = body.substring(7).trim();
+            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+            if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
+                String key = String.valueOf(msgId);
+                if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
+            }
+        } else if (head.startsWith("[VIDEO]")) {
+            String name = head.substring(7).trim();
             String meta = "";
             HBox row = controller.addVideoMessage(name, meta, incoming, msgIdStr);
+            if (replyToId != null && row.getProperties().get("replyTo") == null) {
+                row.getProperties().put("replyTo", replyToId);
+                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
+            }
             if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-            if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
+            if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
                 String key = String.valueOf(msgId);
-                if (markDownloadRequested(key)) {
-                    try {
-                        controller.getConnection().downloadFileByMsgId(msgId);
-                    } catch (IOException ignore) {}
-                }
+                if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
             }
         } else {
-        	controller.addTextMessage(body, incoming, String.valueOf(transferId));
+        	HBox row = controller.addTextMessage(clean, incoming, String.valueOf(transferId));
+            if (replyToId != null && row.getProperties().get("replyTo") == null) {
+                row.getProperties().put("replyTo", replyToId);
+                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
+            }
         }
     }
 
@@ -182,16 +212,40 @@ public class MessageHandler {
                 case IMAGE -> {
                     Image img = new WritableImage(8, 8);
                     row = controller.addImageMessage(img, name + (sizeOnly.isBlank() ? "" : " • " + sizeOnly), true);
+                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
+                    if (replyToJson != null && !replyToJson.isBlank()
+                            && row.getProperties().get("replyTo") == null) {
+                        row.getProperties().put("replyTo", replyToJson);
+                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
+                    }
                 }
                 case AUDIO -> {
                     String dur = (duration > 0) ? UtilHandler.formatDuration(duration) : "--:--";
                     row = controller.addVoiceMessage(dur, true, null);
+                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
+                    if (replyToJson != null && !replyToJson.isBlank()
+                            && row.getProperties().get("replyTo") == null) {
+                        row.getProperties().put("replyTo", replyToJson);
+                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
+                    }
                 }
                 case VIDEO -> {
                     row = controller.addVideoMessage(name, sizeOnly, true, null);
+                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
+                    if (replyToJson != null && !replyToJson.isBlank()
+                            && row.getProperties().get("replyTo") == null) {
+                        row.getProperties().put("replyTo", replyToJson);
+                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
+                    }
                 }
                 default -> {
                     row = controller.addFileMessage(name, sizeOnly, true, null);
+                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
+                    if (replyToJson != null && !replyToJson.isBlank()
+                            && row.getProperties().get("replyTo") == null) {
+                        row.getProperties().put("replyTo", replyToJson);
+                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
+                    }
                 }
             }
             if (!displayKey.isEmpty()) row.getProperties().put("fid", displayKey);
@@ -231,6 +285,9 @@ public class MessageHandler {
         String msgIdStr = UtilHandler.jsonGet(body, "messageId");
         String name = UtilHandler.jsonGet(body, "name");
         String mime = UtilHandler.jsonGet(body, "mime");
+        String replyTo = UtilHandler.jsonGet(body, "replyTo");
+        System.out.println("[CLIENT] FILE_META parsed replyTo=" + replyTo
+                + " fid=" + fid + " msgIdStr=" + msgIdStr + " name=" + name + " mime=" + mime);
         long metaSize = UtilHandler.parseLongSafe(UtilHandler.jsonGet(body, "size"), 0);
         if (metaSize <= 0) metaSize = UtilHandler.parseLongSafe(UtilHandler.jsonGet(body, "bytes"), 0);
         final long sizeHint = metaSize;
@@ -241,7 +298,11 @@ public class MessageHandler {
             controller.getFileIdToMsgId().put(fid, msgIdStr);
             HBox rowByHist = controller.getPendingHistoryFileRows().remove(msgIdStr);
             if (rowByHist != null) {
-                rowByHist.getProperties().put("fid", fid);
+            	if (replyTo != null && !replyTo.isBlank() && rowByHist.getProperties().get("replyTo") == null) {
+                    rowByHist.getProperties().put("replyTo", replyTo);
+                    new UIMessageHandler(controller).attachReplyChipById(
+                        rowByHist, rowByHist.getAlignment()==Pos.CENTER_LEFT, replyTo);
+                }
             }
             boolean tagged = false;
             try {
@@ -259,6 +320,11 @@ public class MessageHandler {
                     if (!hasNumeric) {
                         row.setUserData(msgIdStr);
                         tagged = true;
+                    }
+                    if (replyTo != null && !replyTo.isBlank() && row.getProperties().get("replyTo") == null) {
+                        row.getProperties().put("replyTo", replyTo);
+                        new UIMessageHandler(controller).attachReplyChipById(
+                            row, row.getAlignment()==Pos.CENTER_LEFT, replyTo);
                     }
                 }
             } catch (Exception ignore) {}
@@ -283,6 +349,11 @@ public class MessageHandler {
                                 if (bid != null && bid.startsWith("outgoing-")) {
                                     h.setUserData(msgIdStr);
                                     h.getProperties().put("fid", fid);
+                                    if (replyTo != null && !replyTo.isBlank() && h.getProperties().get("replyTo") == null) {
+                                        h.getProperties().put("replyTo", replyTo);
+                                        new UIMessageHandler(controller).attachReplyChipById(
+                                            h, h.getAlignment()==Pos.CENTER_LEFT, replyTo);
+                                    }
                                     break;
                                 }
                             }
@@ -389,18 +460,26 @@ public class MessageHandler {
                         
                         try {
                             // Cập nhật giao diện tin nhắn dựa trên loại file
-                            switch (kind) {
-                                case AUDIO -> controller.getMediaHandler().updateVoiceBubbleFromUrl(row, fileUrl);
-                                case VIDEO -> {
-                                    controller.getMediaHandler().updateVideoBubbleFromUrl(row, fileUrl);
-                                    refreshVideoLabels(fid, file.length());
-                                }
-                                case IMAGE -> {
-                                    controller.getMediaHandler().updateImageBubbleFromUrl(row, fileUrl);
-                                    refreshImageCaption(fid, file.length());
-                                }
-                                default -> controller.getMediaHandler().updateGenericFileMetaByFid(fid);
+                        switch (kind) {
+                            case AUDIO -> {
+                                controller.getMediaHandler().updateVoiceBubbleFromUrl(row, fileUrl);
+                                new UIMessageHandler(controller).reattachReplyChipIfAny(row);
                             }
+                            case VIDEO -> {
+                                controller.getMediaHandler().updateVideoBubbleFromUrl(row, fileUrl);
+                                refreshVideoLabels(fid, file.length());
+                                new UIMessageHandler(controller).reattachReplyChipIfAny(row);
+                            }
+                            case IMAGE -> {
+                                controller.getMediaHandler().updateImageBubbleFromUrl(row, fileUrl);
+                                refreshImageCaption(fid, file.length());
+                                new UIMessageHandler(controller).reattachReplyChipIfAny(row);
+                            }
+                            default -> {
+                                controller.getMediaHandler().updateGenericFileMetaByFid(fid);
+                                new UIMessageHandler(controller).reattachReplyChipIfAny(row);
+                            }
+                        }
                         } catch (Exception ex) {
                             System.err.println("[UI] Failed to update bubble after download: " + ex.getMessage());
                         }
@@ -424,6 +503,7 @@ public class MessageHandler {
                         } catch (Exception ignore) {}
                     });
                 }
+                System.out.println("[CLIENT] FILE_CHUNK done fid=" + fid + " saved=" + (file!=null?file.getAbsolutePath():"<null>"));
             }
         }
     }
@@ -648,18 +728,53 @@ public class MessageHandler {
         if (controller.getMessageField() == null) return;
         String text = controller.getMessageField().getText().trim();
         if (text.isEmpty() || controller.getSelectedUser() == null) return;
+     // Lấy replyTo từ UI (nếu đang ở trạng thái "reply")
+        Long replyTo = null;
+        if (controller.hasReplyContext()) {
+            HBox replyingRow = controller.getReplyingRow();
+            if (replyingRow != null) {
+                Object ud = replyingRow.getUserData(); // messageId của tin gốc (server đã set khi ack / history)
+                if (ud != null) {
+                    try { replyTo = Long.parseLong(String.valueOf(ud)); } catch (NumberFormatException ignore) {}
+                }
+                // fallback: nếu bubble gốc là file và userData chưa có, thử lấy từ properties
+                if (replyTo == null) {
+                    Object p = replyingRow.getProperties().get("fid");
+                    if (p != null) {
+                        try { replyTo = Long.parseLong(String.valueOf(p)); } catch (NumberFormatException ignore) {}
+                    }
+                }
+                // thêm một nhánh nữa: nếu chip reply đã lưu sẵn "replyTo" thì ưu tiên giá trị đó
+                if (replyTo == null) {
+                    Object p2 = replyingRow.getProperties().get("replyTo");
+                    if (p2 != null) {
+                        try { replyTo = Long.parseLong(String.valueOf(p2)); } catch (NumberFormatException ignore) {}
+                    }
+                }
+            }
+        }
 
+        // Payload gửi lên server: nếu có replyTo thì prepend [REPLY:<id>] để server parse
+        String wireBody = (replyTo != null && replyTo > 0)
+                ? "[REPLY:" + replyTo + "]" + text
+                : text;
+
+        // Gửi qua socket (nếu có kết nối)
         if (controller.getConnection() != null && controller.getConnection().isAlive()) {
             try {
                 String from = (controller.getCurrentUser() != null ? controller.getCurrentUser().getUsername() : "");
-                controller.getConnection().dm(from, controller.getSelectedUser().getUsername(), text);
+                controller.getConnection().dm(from, controller.getSelectedUser().getUsername(), wireBody);
             } catch (IOException ioe) {
                 System.err.println("[NET] DM failed: " + ioe.getMessage());
                 Platform.runLater(() -> controller.showErrorAlert("Gửi tin nhắn thất bại: " + ioe.getMessage()));
             }
         }
-
+     // Render bubble local ngay để UI mượt
         HBox row = controller.addTextMessage(text, false);
+     // Gắn metadata replyTo để UIMessageHandler hiển thị reply chip (đã implement ở phần UI)
+        if (replyTo != null && replyTo > 0) {
+            row.getProperties().put("replyTo", String.valueOf(replyTo));
+        }
         controller.enqueuePendingOutgoing(row);
         controller.getMessageField().clear();
     }
@@ -789,6 +904,57 @@ public class MessageHandler {
             System.err.println("[SMART-REPLY] Raw body: " + body);
         }
     }
+
+    private void handleGroupMsgFrame(Frame f) {
+        String sender = f.sender;
+        String body = f.body == null ? "" : f.body;
+        String groupId = f.recipient; // ví dụ: "11"
+
+        Platform.runLater(() -> {
+            // Nếu đang mở đúng group này thì render tin nhắn
+            String currentPeer = controller.getCurrentPeer();
+            if (currentPeer != null && currentPeer.equals("group:" + groupId)) {
+                controller.addTextMessage(sender + ": " + body, true);
+            } else {
+                // Tùy chọn: hiển thị thông báo mini hoặc highlight sidebar
+                System.out.println("[GROUP_MSG] Tin nhắn tới group " + groupId + " (từ " + sender + ") nhưng user không mở group này.");
+            }
+        });
+    }
+    private void handleGroupHistoryFrame(Frame f) {
+        String groupId = f.recipient;
+        String body = (f.body == null) ? "" : f.body.trim();
+
+        Platform.runLater(() -> {
+            String currentPeer = controller.getCurrentPeer();
+            if (currentPeer == null || !currentPeer.equals("group:" + groupId)) return;
+            if (body.isEmpty()) return;
+
+            // Giả định server gửi dạng: "sender: message"
+            int p = body.indexOf(":");
+            String sender = (p > 0) ? body.substring(0, p).trim() : "unknown";
+            String msg = (p > 0) ? body.substring(p + 1).trim() : body;
+
+            boolean incoming = true;
+            String myName = (controller.getCurrentUser() != null)
+                    ? controller.getCurrentUser().getUsername()
+                    : "";
+
+            // Nếu chính mình gửi -> render bên phải và KHÔNG hiển thị tên
+            if (sender.equals(myName)) {
+                incoming = false;
+                controller.addTextMessage(msg, incoming);
+                System.out.println("[GROUP_HISTORY] render self msg: " + msg);
+            } else {
+                // Người khác → render bên trái và hiển thị tên người gửi
+                controller.addTextMessage(sender + ": " + msg, incoming);
+                System.out.println("[GROUP_HISTORY] render other msg: " + sender + ": " + msg);
+            }
+        });
+    }
+
+
+
 
 
 }
