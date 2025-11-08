@@ -4,7 +4,7 @@ import java.sql.*;
 
 public class DBConnection {
 	private static final String URL =
-		    "jdbc:mysql://localhost:3306/socialchatapp"
+		    "jdbc:mysql://localhost:3307/socialchatapp"
 		  + "?useSSL=false"
 		  + "&allowPublicKeyRetrieval=true"
 		  + "&serverTimezone=UTC";
