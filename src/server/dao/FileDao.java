@@ -1,6 +1,9 @@
 package server.dao;
 
+import common.FileResource;
+
 import java.sql.*;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -10,18 +13,8 @@ public class FileDao {
     public FileDao(Connection conn) {
         this.conn = conn;
     }
-    
-    public List<FileRecord> listByMessageId(long messageId) throws SQLException {
-        String sql = "SELECT * FROM files WHERE message_id = ?";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, messageId);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<FileRecord> list = new ArrayList<>();
-                while (rs.next()) list.add(mapRow(rs));
-                return list;
-            }
-        }
-    }
+
+    /* ===================== CREATE ===================== */
 
     /** Lưu metadata cho mọi loại file (image/video/audio/other) */
     public long save(long messageId, String fileName, String filePath,
@@ -39,14 +32,31 @@ public class FileDao {
             ps.executeUpdate();
 
             try (ResultSet rs = ps.getGeneratedKeys()) {
-                if (rs.next()) return rs.getLong(1);
+                if (rs.next()) {
+                    return rs.getLong(1);
+                }
             }
         }
         return 0L;
     }
 
-    /** Lấy metadata theo message_id (duy nhất 1 file/1 message trong luồng này) */
-    public FileRecord getByMessageId(long messageId) throws SQLException {
+    /* ===================== READ ===================== */
+
+    /** Lấy list file theo message_id (1-n) */
+    public List<FileResource> listByMessageId(long messageId) throws SQLException {
+        String sql = "SELECT * FROM files WHERE message_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, messageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<FileResource> list = new ArrayList<>();
+                while (rs.next()) list.add(mapRow(rs));
+                return list;
+            }
+        }
+    }
+
+    /** Lấy metadata theo message_id (case cũ: 1 message ↔ 1 file) */
+    public FileResource getByMessageId(long messageId) throws SQLException {
         String sql = "SELECT * FROM files WHERE message_id = ? LIMIT 1";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, messageId);
@@ -58,7 +68,7 @@ public class FileDao {
     }
 
     /** Lấy metadata theo id file (PK) */
-    public FileRecord getById(long id) throws SQLException {
+    public FileResource getById(long id) throws SQLException {
         String sql = "SELECT * FROM files WHERE id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, id);
@@ -69,8 +79,8 @@ public class FileDao {
         return null;
     }
 
-    /** Danh sách lịch sử file (mọi loại) của user (phân trang) */
-    public List<FileRecord> listByUserPaged(String username, int limit, int offset) throws SQLException {
+    /** Danh sách lịch sử file của 1 user (phân trang) */
+    public List<FileResource> listByUserPaged(String username, int limit, int offset) throws SQLException {
         String sql = """
             SELECT f.*
             FROM files f
@@ -85,14 +95,15 @@ public class FileDao {
             ps.setInt(3, Math.max(1, limit));
             ps.setInt(4, Math.max(0, offset));
             try (ResultSet rs = ps.executeQuery()) {
-                List<FileRecord> list = new ArrayList<>();
+                List<FileResource> list = new ArrayList<>();
                 while (rs.next()) list.add(mapRow(rs));
                 return list;
             }
         }
     }
-    
-    public List<FileRecord> listByUserAndPeer(String user, String peer, int limit, int offset) throws SQLException {
+
+    /** Lịch sử file giữa 2 user (phân trang) */
+    public List<FileResource> listByUserAndPeer(String user, String peer, int limit, int offset) throws SQLException {
         String sql = """
             SELECT f.*
             FROM files f
@@ -109,14 +120,16 @@ public class FileDao {
             ps.setInt(5, Math.max(1, limit));
             ps.setInt(6, Math.max(0, offset));
             try (ResultSet rs = ps.executeQuery()) {
-                List<FileRecord> list = new ArrayList<>();
+                List<FileResource> list = new ArrayList<>();
                 while (rs.next()) list.add(mapRow(rs));
                 return list;
             }
         }
     }
 
-    /** Xoá theo message_id (trong DB) */
+    /* ===================== DELETE ===================== */
+
+    /** Xoá metadata theo message_id (trong DB) */
     public boolean deleteByMessageId(long messageId) throws SQLException {
         String sql = "DELETE FROM files WHERE message_id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -125,35 +138,20 @@ public class FileDao {
         }
     }
 
-    /** Ánh xạ 1 hàng SQL → FileRecord */
-    private FileRecord mapRow(ResultSet rs) throws SQLException {
-        FileRecord r = new FileRecord();
-        r.id         = rs.getLong("id");
-        r.messageId  = rs.getLong("message_id");
-        r.fileName   = rs.getString("file_name");
-        r.filePath   = rs.getString("file_path");
-        r.mimeType   = rs.getString("mime_type");
-        r.fileSize   = rs.getLong("file_size");
-        r.uploadedAt = rs.getTimestamp("uploaded_at");
-        return r;
-    }
+    /* ===================== Helpers ===================== */
 
-    /** POJO kết quả */
-    public static class FileRecord {
-        public long id;
-        public long messageId;
-        public String fileName;
-        public String filePath;
-        public String mimeType;
-        public long fileSize;
-        public Timestamp uploadedAt;
+    /** Ánh xạ 1 hàng SQL → FileResource */
+    private FileResource mapRow(ResultSet rs) throws SQLException {
+        long id         = rs.getLong("id");
+        long messageId  = rs.getLong("message_id");
+        String fileName = rs.getString("file_name");
+        String filePath = rs.getString("file_path");
+        String mimeType = rs.getString("mime_type");
+        long fileSize   = rs.getLong("file_size");
 
-        @Override
-        public String toString() {
-            return String.format(
-                "FileRecord{id=%d, msgId=%d, name='%s', size=%dB, path='%s', mime='%s'}",
-                id, messageId, fileName, fileSize, filePath, mimeType
-            );
-        }
+        Timestamp ts    = rs.getTimestamp("uploaded_at");
+        Instant uploadedAt = (ts == null) ? null : ts.toInstant();
+
+        return new FileResource(id, messageId, fileName, filePath, mimeType, fileSize, uploadedAt);
     }
 }

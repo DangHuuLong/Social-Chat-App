@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import common.Message;
+import common.FileResource;
 
 public class ClientHandler implements Runnable {
     private final Socket socket;
@@ -508,8 +509,12 @@ public class ClientHandler implements Runnable {
             String msgIdStr  = jsonGet(body, "messageId");
             String legacyId  = jsonGet(body, "id"); // uuid cũ
 
-            if (fileIdStr != null && !fileIdStr.isBlank()) { try { fileId = Long.parseLong(fileIdStr); } catch (Exception ignore) {} }
-            if (msgIdStr  != null && !msgIdStr.isBlank())  { try { messageId = Long.parseLong(msgIdStr); }  catch (Exception ignore) {} }
+            if (fileIdStr != null && !fileIdStr.isBlank()) {
+                try { fileId = Long.parseLong(fileIdStr); } catch (Exception ignore) {}
+            }
+            if (msgIdStr != null && !msgIdStr.isBlank()) {
+                try { messageId = Long.parseLong(msgIdStr); } catch (Exception ignore) {}
+            }
 
             if (fileId == null && messageId == null) {
                 long n = parseLongSafe(body, 0L);
@@ -519,57 +524,74 @@ public class ClientHandler implements Runnable {
             String uuid = null;
             if (legacyId != null && !legacyId.isBlank()) uuid = legacyId;
             else if ((fileId == null && messageId == null) && body.length() >= 32 && body.contains("-")) uuid = body;
+
             if (uuid != null) {
                 Long mappedFileId = uuidToFileId.get(uuid);
                 Long mappedMsgId  = uuidToMsgId.get(uuid);
                 if (fileId == null && mappedFileId != null) fileId = mappedFileId;
-                if (messageId == null && mappedMsgId  != null) messageId = mappedMsgId;
+                if (messageId == null && mappedMsgId != null) messageId = mappedMsgId;
             }
+
             System.out.println("[DL] resolved fileId=" + fileId + " messageId=" + messageId + " legacyUuid=" + uuid);
-            FileDao.FileRecord fileRow = null;
+
+            FileResource fileRow = null;
             if (fileId != null && fileId > 0) fileRow = fileDao.getById(fileId);
             if (fileRow == null && messageId != null && messageId > 0) fileRow = fileDao.getByMessageId(messageId);
 
-            if (fileRow == null) { 
-            	System.out.println("[DL] fileRow=null (not found by fileId/messageId)");
-            	sendFrame(Frame.error("INVALID_FILE_ID")); 
-            	return; 
+            if (fileRow == null) {
+                System.out.println("[DL] fileRow=null (not found by fileId/messageId)");
+                sendFrame(Frame.error("INVALID_FILE_ID"));
+                return;
             }
-            System.out.println("[DL] fileRow id=" + fileRow.id
-                    + " msgId=" + fileRow.messageId
-                    + " name=" + fileRow.fileName
-                    + " mime=" + fileRow.mimeType
-                    + " path=" + fileRow.filePath);
 
-            File file = new File(fileRow.filePath);
-            if (!file.exists()) { sendFrame(Frame.error("FILE_NOT_FOUND_DISK")); return; }
+            long frId        = fileRow.getId();
+            long frMsgId     = fileRow.getMessageId();
+            String frName    = fileRow.getFileName();
+            String frPath    = fileRow.getFilePath();
+            String frMime    = fileRow.getMimeType();
+            long frSize      = fileRow.getFileSize();
 
-            String mime = (fileRow.mimeType != null) ? fileRow.mimeType : "application/octet-stream";
-            String name = (fileRow.fileName  != null) ? fileRow.fileName  : ("file-" + fileRow.id);
+            System.out.println("[DL] fileRow id=" + frId
+                    + " msgId=" + frMsgId
+                    + " name=" + frName
+                    + " mime=" + frMime
+                    + " path=" + frPath);
+
+            File file = new File(frPath);
+            if (!file.exists()) {
+                sendFrame(Frame.error("FILE_NOT_FOUND_DISK"));
+                return;
+            }
+
+            String mime = (frMime != null) ? frMime : "application/octet-stream";
+            String name = (frName != null) ? frName : ("file-" + frId);
+
             Long replyTo = null;
-            long msgIdForFile = fileRow.messageId;
             try {
-                if (msgIdForFile > 0) {
-                    replyTo = messageDao.getReplyToByMessageId(msgIdForFile);
+                if (frMsgId > 0) {
+                    replyTo = messageDao.getReplyToByMessageId(frMsgId);
                 }
-                System.out.println("[DL] replyTo for messageId=" + msgIdForFile + " -> " + replyTo);
+                System.out.println("[DL] replyTo for messageId=" + frMsgId + " -> " + replyTo);
             } catch (SQLException e) {
                 System.out.println("[DL] getReplyToByMessageId failed: " + e.getMessage());
             }
+
             String metaJson = "{"
                     + "\"from\":\"" + escJson(username) + "\","
                     + "\"to\":\"\","
                     + "\"name\":\"" + escJson(name) + "\","
                     + "\"mime\":\"" + escJson(mime) + "\","
-                    + "\"fileId\":\"" + fileRow.id + "\","
-                    + "\"messageId\":\"" + (fileRow.messageId) + "\","
-                    + "\"replyTo\":" + (replyTo == null ? "null" : replyTo) + "," 
+                    + "\"fileId\":\"" + frId + "\","
+                    + "\"messageId\":\"" + frMsgId + "\","
+                    + "\"replyTo\":" + (replyTo == null ? "null" : replyTo) + ","
                     + "\"size\":" + file.length()
                     + "}";
-            System.out.println("[DL] send FILE_META fileId=" + fileRow.id
-                    + " msgId=" + fileRow.messageId
+
+            System.out.println("[DL] send FILE_META fileId=" + frId
+                    + " msgId=" + frMsgId
                     + " replyTo=" + replyTo
                     + " size=" + file.length());
+
             sendFrame(new Frame(MessageType.FILE_META, username, "", metaJson));
 
             try (InputStream fis = new BufferedInputStream(new FileInputStream(file))) {
@@ -577,17 +599,23 @@ public class ClientHandler implements Runnable {
                 int n, seq = 0;
                 long rem = file.length();
                 while ((n = fis.read(buf)) != -1) {
-                	if (seq == 0) System.out.println("[DL] start streaming fileId=" + fileRow.id + " total=" + file.length());
+                    if (seq == 0) {
+                        System.out.println("[DL] start streaming fileId=" + frId + " total=" + file.length());
+                    }
                     rem -= n;
                     boolean last = (rem == 0);
                     byte[] slice = (n == buf.length) ? buf : Arrays.copyOf(buf, n);
+
                     Frame ch = new Frame(MessageType.FILE_CHUNK, username, "", "");
-                    ch.transferId = String.valueOf(fileRow.id);
+                    ch.transferId = String.valueOf(frId);
                     ch.seq = seq++;
                     ch.last = last;
                     ch.bin = slice;
                     sendFrame(ch);
-                    if (last) System.out.println("[DL] done streaming fileId=" + fileRow.id + " chunks=" + (seq));
+
+                    if (last) {
+                        System.out.println("[DL] done streaming fileId=" + frId + " chunks=" + (seq));
+                    }
                 }
             }
         } catch (SQLException e) {
@@ -601,14 +629,13 @@ public class ClientHandler implements Runnable {
     private void handleFileHistory(Frame f) {
         int limit = 5;
         int offset = 0;
-        
-        // Lấy thông tin người đối thoại (peer) từ trường recipient
+
         String peer = f.recipient;
         if (peer == null || peer.isBlank()) {
             sendFrame(Frame.error("MISSING_RECIPIENT_FOR_FILE_HISTORY"));
             return;
         }
-        
+
         try {
             if (f.body != null && !f.body.isBlank()) {
                 String body = f.body.trim();
@@ -620,15 +647,17 @@ public class ClientHandler implements Runnable {
         } catch (Exception ignore) {}
 
         try {
-            // Gọi phương thức listByUserAndPeer mới trong FileDao
-            var rows = fileDao.listByUserAndPeer(username, peer, limit, offset);
-            for (var r : rows) {
+            List<FileResource> rows = fileDao.listByUserAndPeer(username, peer, limit, offset);
+            for (FileResource r : rows) {
                 String jsonBody = String.format(
                     "{\"file_name\":\"%s\",\"mime_type\":\"%s\",\"file_size\":%d,\"file_path\":\"%s\"}",
-                    escJson(r.fileName), escJson(r.mimeType), r.fileSize, escJson(r.filePath)
+                    escJson(r.getFileName()),
+                    escJson(r.getMimeType()),
+                    r.getFileSize(),
+                    escJson(r.getFilePath())
                 );
                 Frame hist = new Frame(MessageType.FILE_HISTORY, username, peer, jsonBody);
-                hist.transferId = String.valueOf(r.id);
+                hist.transferId = String.valueOf(r.getId());
                 sendFrame(hist);
             }
             sendFrame(Frame.ack("OK FILE_HISTORY " + rows.size()));
@@ -640,14 +669,17 @@ public class ClientHandler implements Runnable {
     /* ================= DELETE FILE (hợp nhất) ================= */
     private void handleDeleteFile(Frame f) {
         long msgId = parseLongSafe(f.body, 0L);
-        if (msgId <= 0) { sendFrame(Frame.error("INVALID_FILE_ID")); return; }
+        if (msgId <= 0) {
+            sendFrame(Frame.error("INVALID_FILE_ID"));
+            return;
+        }
 
         try {
-            var row = fileDao.getByMessageId(msgId);
+            FileResource row = fileDao.getByMessageId(msgId);
             boolean deleted = fileDao.deleteByMessageId(msgId);
             if (deleted) {
                 if (row != null) {
-                    File onDisk = new File(row.filePath);
+                    File onDisk = new File(row.getFilePath());
                     if (onDisk.exists()) onDisk.delete();
                 }
                 sendFrame(Frame.ack("OK FILE_DELETED"));
@@ -670,13 +702,12 @@ public class ClientHandler implements Runnable {
             long id = parseLongSafe(f.body, 0L);
             if (id <= 0) { sendFrame(Frame.error("BAD_ID")); return; }
             String peer = messageDao.deleteByIdReturningPeer(id, username);
-
-            // xoá file nếu có
+            
             try {
-                var fileRow = fileDao.getByMessageId(id);
+                FileResource fileRow = fileDao.getByMessageId(id);
                 if (fileRow != null) {
                     fileDao.deleteByMessageId(id);
-                    File toDelete = new File(fileRow.filePath);
+                    File toDelete = new File(fileRow.getFilePath());
                     if (toDelete.exists()) toDelete.delete();
                 }
             } catch (SQLException ignore) {}

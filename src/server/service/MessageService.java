@@ -1,10 +1,13 @@
 package server.service;
 
+import common.FileResource;
 import server.dao.MessageDao;
 import server.dao.FileDao;
+
 import java.io.File;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.List;
 
 public class MessageService {
     private final Connection conn;
@@ -16,28 +19,33 @@ public class MessageService {
         this.messageDao = new MessageDao(conn);
         this.fileDao    = new FileDao(conn);
     }
+
     public boolean deleteMessageCascade(long messageId, String requester) throws SQLException {
+        boolean oldAutoCommit = conn.getAutoCommit();
         conn.setAutoCommit(false);
         try {
-            String peer = messageDao.deleteByIdReturningPeer(-1L, requester); 
             String sender = messageDao.getSenderById(messageId);
             if (sender == null || !sender.equals(requester)) {
                 conn.rollback();
                 return false;
             }
 
-            var files = fileDao.listByMessageId(messageId);
+            List<FileResource> files = fileDao.listByMessageId(messageId);
 
-            for (var fr : files) {
+            for (FileResource fr : files) {
                 try {
-                    if (fr.filePath != null && !fr.filePath.isBlank()) {
-                        File f = new File(fr.filePath);
-                        if (!f.isAbsolute()) {
-                            f = new File("Uploads", fr.filePath);
+                    String path = fr.getFilePath();
+                    if (path != null && !path.isBlank()) {
+                        File file = new File(path);
+                        if (!file.isAbsolute()) {
+                            file = new File("Uploads", path);
                         }
-                        if (f.exists()) f.delete();
+                        if (file.exists()) {
+                            file.delete();
+                        }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) {
+                }
             }
 
             fileDao.deleteByMessageId(messageId);
@@ -54,7 +62,7 @@ public class MessageService {
             conn.rollback();
             throw e;
         } finally {
-            try { conn.setAutoCommit(true); } catch (Exception ignore) {}
+            try { conn.setAutoCommit(oldAutoCommit); } catch (Exception ignore) {}
         }
     }
 }
