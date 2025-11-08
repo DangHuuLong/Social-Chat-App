@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import common.Message;
 
 public class ClientHandler implements Runnable {
     private final Socket socket;
@@ -131,8 +132,22 @@ public class ClientHandler implements Runnable {
         broadcast("🔵 " + username + " joined", true);
 
         try {
-            var pending = messageDao.loadQueued(username);
-            for (var m : pending) sendFrame(m);
+            // DAO giờ trả về List<Message>
+            List<Message> pending = messageDao.loadQueued(username);
+            for (Message m : pending) {
+                String bodyWithReply = prependReplyTag(
+                        m.getBody() == null ? "" : m.getBody(),
+                        m.getReplyTo()
+                );
+                Frame dm = new Frame(
+                        MessageType.DM,
+                        m.getSender(),
+                        m.getRecipient(),
+                        bodyWithReply
+                );
+                dm.transferId = String.valueOf(m.getId());
+                sendFrame(dm);
+            }
             if (!pending.isEmpty()) {
                 sendFrame(Frame.ack("Delivered " + pending.size() + " offline messages"));
             }
@@ -143,7 +158,6 @@ public class ClientHandler implements Runnable {
         // 🔥 NEW: gửi danh sách group user đang ở
         sendGroupListToClient();
     }
-
 
     /* ================= DIRECT MESSAGE ================= */
     private void handleDirectMessage(Frame f) {
@@ -270,21 +284,30 @@ public class ClientHandler implements Runnable {
     }
 
     /* ================= SEARCH ================= */
-    private void handleSearch(Frame f){
+    private void handleSearch(Frame f) {
         String peer = f.recipient;
         String q = jsonGet(f.body, "q");
         if (q == null) q = "";
         int limit = (f.seq > 0) ? f.seq : 50;
         int offset = (int) parseLongSafe(jsonGet(f.body, "offset"), 0);
-        try{
-            var rows = messageDao.searchConversation(username, peer, q, limit, offset);
-            for (var r : rows){
-                Frame hit = new Frame(MessageType.SEARCH_HIT, r.sender, r.recipient, r.body);
-                hit.transferId = String.valueOf(r.id);
+
+        try {
+            List<Message> rows = messageDao.searchConversation(username, peer, q, limit, offset);
+            for (Message m : rows) {
+                String plain = (m.getBody() == null) ? "" : m.getBody();
+                String bodyWithReply = prependReplyTag(plain, m.getReplyTo());
+
+                Frame hit = new Frame(
+                        MessageType.SEARCH_HIT,
+                        m.getSender(),
+                        m.getRecipient(),
+                        bodyWithReply
+                );
+                hit.transferId = String.valueOf(m.getId());
                 sendFrame(hit);
             }
             sendFrame(Frame.ack("OK SEARCH " + rows.size()));
-        }catch(Exception e){
+        } catch (Exception e) {
             sendFrame(Frame.error("SEARCH_FAIL"));
         }
     }
@@ -296,16 +319,23 @@ public class ClientHandler implements Runnable {
         try { limit = Integer.parseInt(f.body); } catch (Exception ignore) {}
 
         try {
-        	var rows = messageDao.loadConversationWithReply(username, peer, limit);
-            for (var r : rows) {
-                boolean incoming = !r.sender.equals(username);
-                String plain = r.body == null ? "" : r.body;
-                String bodyWithReply = prependReplyTag(plain, r.replyTo);
+            List<Message> rows = messageDao.loadConversation(username, peer, limit);
+            for (Message m : rows) {
+                boolean incoming = !username.equals(m.getSender());
+                String plain = (m.getBody() == null) ? "" : m.getBody();
+                String bodyWithReply = prependReplyTag(plain, m.getReplyTo());
+
                 String txt = incoming
-                		? "[HIST IN] " + r.sender + ": " + bodyWithReply
-                                : "[HIST OUT] " + bodyWithReply;
-                Frame hist = new Frame(MessageType.HISTORY, r.sender, r.recipient, txt);
-                hist.transferId = String.valueOf(r.id);
+                        ? "[HIST IN] " + m.getSender() + ": " + bodyWithReply
+                        : "[HIST OUT] " + bodyWithReply;
+
+                Frame hist = new Frame(
+                        MessageType.HISTORY,
+                        m.getSender(),
+                        m.getRecipient(),
+                        txt
+                );
+                hist.transferId = String.valueOf(m.getId());
                 sendFrame(hist);
             }
             sendFrame(Frame.ack("OK HISTORY " + rows.size()));
