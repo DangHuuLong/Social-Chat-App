@@ -298,6 +298,7 @@ public class MessageHandler {
             controller.getFileIdToMsgId().put(fid, msgIdStr);
             HBox rowByHist = controller.getPendingHistoryFileRows().remove(msgIdStr);
             if (rowByHist != null) {
+            	rowByHist.getProperties().put("fid", fid);
             	if (replyTo != null && !replyTo.isBlank() && rowByHist.getProperties().get("replyTo") == null) {
                     rowByHist.getProperties().put("replyTo", replyTo);
                     new UIMessageHandler(controller).attachReplyChipById(
