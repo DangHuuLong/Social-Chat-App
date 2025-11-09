@@ -389,7 +389,14 @@ public class MidController implements CallSignalListener {
                 getClass().getResource("/client/view/images/group.png").toExternalForm()
             ));
         }
-
+        
+        String convKey = "group:" + g.groupId;
+        List<Frame> pending = pendingFileEvents.remove(convKey);
+        if (pending != null) {
+            for (Frame pf : pending) {
+                handleServerFrame(pf);
+            }
+        }
     }
 
 	private Image loadAvatarImage(int userId) {

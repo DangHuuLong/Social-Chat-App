@@ -33,17 +33,54 @@ public class MessageHandler {
     public MessageHandler(MidController controller) {
         this.controller = controller;
     }
+    
+    // ===================== CONVERSATION KEY HELPERS =====================
+
+    /**
+     * Key đại diện cho cuộc hội thoại hiện đang mở.
+     * - DM: username bên kia
+     * - Group: "group:<groupId>"
+     */
+    private String getCurrentConversationKey() {
+        String peer = controller.getCurrentPeer();
+        if (peer != null && !peer.isBlank()) {
+            return peer; // ví dụ "group:11" hoặc username
+        }
+        if (controller.getSelectedUser() != null) {
+            return controller.getSelectedUser().getUsername();
+        }
+        return null;
+    }
+
+    /**
+     * Xác định convKey cho 1 file event dựa trên JSON.
+     * Giả định server gửi:
+     *   scope = "dm" | "group"
+     *   groupId = "11" (nếu là group)
+     * Nếu server dùng field khác (vd: roomId), chỉ cần chỉnh lại ở đây.
+     */
+    private String resolveConversationKeyForFileEvt(String json, String from) {
+        String scope = UtilHandler.jsonGet(json, "scope");    // optional
+        String groupId = UtilHandler.jsonGet(json, "groupId");// optional
+
+        if ("group".equalsIgnoreCase(scope) && groupId != null && !groupId.isBlank()) {
+            return "group:" + groupId.trim();
+        }
+
+        // fallback: nếu không có scope/groupId thì coi như DM từ 'from'
+        return from;
+    }
 
     // ===================== MAIN DISPATCH =====================
 
     public void handleServerFrame(Frame f) {
         if (f == null) return;
-        String openPeer = (controller.getSelectedUser() != null) ? controller.getSelectedUser().getUsername() : null;
+        String convKey = getCurrentConversationKey();
 
         switch (f.type) {
-            case DM -> handleDmFrame(f, openPeer);
-            case HISTORY -> handleHistoryFrame(f, openPeer);
-            case FILE_EVT, AUDIO_EVT -> handleFileEvtFrame(f, openPeer);
+            case DM -> handleDmFrame(f, convKey);
+            case HISTORY -> handleHistoryFrame(f, convKey);
+            case FILE_EVT, AUDIO_EVT -> handleFileEvtFrame(f, convKey);
             case FILE_META -> handleFileMetaFrame(f);
             case FILE_CHUNK -> handleFileChunkFrame(f);
             case DELETE_MSG -> handleDeleteMsgFrame(f);
@@ -54,8 +91,8 @@ public class MessageHandler {
             case SMART_REPLY -> handleSmartReplyFrame(f);
             case GROUP_MSG -> handleGroupMsgFrame(f);
             case GROUP_HISTORY -> handleGroupHistoryFrame(f);
-
         }
+
     }
 
     // ===================== PRIVATE HANDLERS =====================
@@ -179,76 +216,113 @@ public class MessageHandler {
         }
     }
 
-    private void handleFileEvtFrame(Frame f, String openPeer) {
-        String json = f.body == null ? "" : f.body;
+    private void handleFileEvtFrame(Frame f, String currentConvKey) {
+        String json = (f.body == null) ? "" : f.body;
+
         String from = UtilHandler.jsonGet(json, "from");
+        String to   = UtilHandler.jsonGet(json, "to");
         String name = UtilHandler.jsonGet(json, "name");
         String mime = UtilHandler.jsonGet(json, "mime");
-        long bytes = UtilHandler.parseLongSafe(UtilHandler.jsonGet(json, "bytes"), 0);
+        long bytes  = UtilHandler.parseLongSafe(UtilHandler.jsonGet(json, "bytes"), 0);
         int duration = UtilHandler.parseIntSafe(UtilHandler.jsonGet(json, "duration"), 0);
-        String uuid = UtilHandler.jsonGet(json, "uuid");
+        String uuid   = UtilHandler.jsonGet(json, "uuid");
         String legacy = UtilHandler.jsonGet(json, "id");
         String dbIdStr = UtilHandler.jsonGet(json, "fileId");
+
         Long dbId = null;
         if (dbIdStr != null && !dbIdStr.isBlank()) {
-            try {
-                dbId = Long.parseLong(dbIdStr);
-            } catch (Exception ignore) {}
+            try { dbId = Long.parseLong(dbIdStr); } catch (Exception ignore) {}
         }
-        String bubbleKey = (legacy != null && !legacy.isBlank()) ? legacy : (uuid != null && !uuid.isBlank() ? uuid : null);
-        if (bubbleKey != null && name != null) controller.getFileIdToName().put(bubbleKey, name);
-        if (bubbleKey != null && mime != null && !mime.isBlank()) controller.getFileIdToMime().put(bubbleKey, mime);
+
+        // map bubbleKey -> name/mime như cũ
+        String bubbleKey = (legacy != null && !legacy.isBlank())
+                ? legacy
+                : (uuid != null && !uuid.isBlank() ? uuid : null);
+
+        if (bubbleKey != null && name != null) {
+            controller.getFileIdToName().put(bubbleKey, name);
+        }
+        if (bubbleKey != null && mime != null && !mime.isBlank()) {
+            controller.getFileIdToMime().put(bubbleKey, mime);
+        }
+
         if (dbId != null && dbId > 0) {
             String dbKey = String.valueOf(dbId);
             if (name != null) controller.getFileIdToName().put(dbKey, name);
             if (mime != null && !mime.isBlank()) controller.getFileIdToMime().put(dbKey, mime);
         }
-        if (openPeer != null && openPeer.equals(from)) {
-            String displayKey = (dbId != null && dbId > 0) ? String.valueOf(dbId) : (bubbleKey != null ? bubbleKey : "");
+
+        // ===== XÁC ĐỊNH CONVERSATION KEY ĐÍCH =====
+        String me = (controller.getCurrentUser() != null)
+                ? controller.getCurrentUser().getUsername()
+                : null;
+
+        String targetConvKey;
+
+        if (to != null) {
+            to = to.trim();
+
+            // Nếu là group: server có thể gửi "to":"group:4" HOẶC "to":"4"
+            if (to.startsWith("group:")) {
+                targetConvKey = to;
+            } else if (to.matches("\\d+")) {
+                targetConvKey = "group:" + to;
+            }
+            // Nếu gửi trực tiếp cho mình -> DM: convKey là username bên kia
+            else if (me != null && to.equals(me) && from != null && !from.isBlank()) {
+                targetConvKey = from;
+            } else {
+                // fallback: giữ tương thích cũ
+                targetConvKey = from;
+            }
+        } else {
+            // không có "to" trong JSON -> fallback cũ
+            targetConvKey = from;
+        }
+
+        if (targetConvKey == null || targetConvKey.isBlank()) {
+            System.out.println("[FILE_EVT] Cannot resolve targetConvKey, json=" + json);
+            return;
+        }
+
+        // ===== ĐANG MỞ ĐÚNG CUỘC HỘI THOẠI -> RENDER LUÔN =====
+        if (currentConvKey != null && currentConvKey.equals(targetConvKey)) {
+            String displayKey = (dbId != null && dbId > 0)
+                    ? String.valueOf(dbId)
+                    : (bubbleKey != null ? bubbleKey : "");
+
             UtilHandler.MediaKind kind = UtilHandler.classifyMedia(mime, name);
             String sizeOnly = (bytes > 0) ? UtilHandler.humanBytes(bytes) : "";
+            boolean incoming = true; // server push
+
             HBox row;
             switch (kind) {
                 case IMAGE -> {
                     Image img = new WritableImage(8, 8);
-                    row = controller.addImageMessage(img, name + (sizeOnly.isBlank() ? "" : " • " + sizeOnly), true);
-                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
-                    if (replyToJson != null && !replyToJson.isBlank()
-                            && row.getProperties().get("replyTo") == null) {
-                        row.getProperties().put("replyTo", replyToJson);
-                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
-                    }
+                    row = controller.addImageMessage(
+                            img,
+                            name + (sizeOnly.isBlank() ? "" : " • " + sizeOnly),
+                            incoming
+                    );
                 }
                 case AUDIO -> {
-                    String dur = (duration > 0) ? UtilHandler.formatDuration(duration) : "--:--";
-                    row = controller.addVoiceMessage(dur, true, null);
-                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
-                    if (replyToJson != null && !replyToJson.isBlank()
-                            && row.getProperties().get("replyTo") == null) {
-                        row.getProperties().put("replyTo", replyToJson);
-                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
-                    }
+                    String dur = (duration > 0)
+                            ? UtilHandler.formatDuration(duration)
+                            : "--:--";
+                    row = controller.addVoiceMessage(dur, incoming, null);
                 }
                 case VIDEO -> {
-                    row = controller.addVideoMessage(name, sizeOnly, true, null);
-                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
-                    if (replyToJson != null && !replyToJson.isBlank()
-                            && row.getProperties().get("replyTo") == null) {
-                        row.getProperties().put("replyTo", replyToJson);
-                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
-                    }
+                    row = controller.addVideoMessage(name, sizeOnly, incoming, null);
                 }
                 default -> {
-                    row = controller.addFileMessage(name, sizeOnly, true, null);
-                    String replyToJson = UtilHandler.jsonGet(json, "replyTo"); // đã có trong server push
-                    if (replyToJson != null && !replyToJson.isBlank()
-                            && row.getProperties().get("replyTo") == null) {
-                        row.getProperties().put("replyTo", replyToJson);
-                        new UIMessageHandler(controller).attachReplyChipById(row, true, replyToJson);
-                    }
+                    row = controller.addFileMessage(name, sizeOnly, incoming, null);
                 }
             }
-            if (!displayKey.isEmpty()) row.getProperties().put("fid", displayKey);
+
+            if (!displayKey.isEmpty()) {
+                row.getProperties().put("fid", displayKey);
+            }
+
             String msgIdStr0 = UtilHandler.jsonGet(json, "messageId");
             if (msgIdStr0 != null && !msgIdStr0.isBlank()) {
                 controller.getFileIdToMsgId().put(displayKey, msgIdStr0);
@@ -258,24 +332,32 @@ public class MessageHandler {
                 } catch (Exception ignore) {}
             }
 
+            // Auto download giống logic cũ
             if (controller.getConnection() != null && controller.getConnection().isAlive()) {
-                Long msgId = null;
-                String msgIdS = UtilHandler.jsonGet(json, "messageId");
-                if (msgIdS != null && !msgIdS.isBlank()) {
-                    try {
-                        msgId = Long.parseLong(msgIdS);
-                    } catch (Exception ignore) {}
-                }
                 try {
-                    if (dbId != null && dbId > 0) controller.getConnection().downloadFileByFileId(dbId);
-                    else if (msgId != null && msgId > 0) controller.getConnection().downloadFileByMsgId(msgId);
-                    else if (bubbleKey != null) controller.getConnection().downloadFileLegacy(bubbleKey);
+                    Long msgId = null;
+                    String msgIdS = UtilHandler.jsonGet(json, "messageId");
+                    if (msgIdS != null && !msgIdS.isBlank()) {
+                        try { msgId = Long.parseLong(msgIdS); } catch (Exception ignore) {}
+                    }
+
+                    if (dbId != null && dbId > 0) {
+                        controller.getConnection().downloadFileByFileId(dbId);
+                    } else if (msgId != null && msgId > 0) {
+                        controller.getConnection().downloadFileByMsgId(msgId);
+                    } else if (bubbleKey != null) {
+                        controller.getConnection().downloadFileLegacy(bubbleKey);
+                    }
                 } catch (IOException e) {
                     System.err.println("[DL] request failed: " + e.getMessage());
                 }
             }
+
         } else {
-            controller.getPendingFileEvents().computeIfAbsent(from, k -> new ArrayList<>()).add(f);
+            // ===== CHƯA MỞ ĐÚNG CUỘC HỘI THOẠI -> LƯU PENDING ĐÚNG KEY =====
+            controller.getPendingFileEvents()
+                    .computeIfAbsent(targetConvKey, k -> new ArrayList<>())
+                    .add(f);
         }
     }
 
@@ -924,38 +1006,122 @@ public class MessageHandler {
     }
     private void handleGroupHistoryFrame(Frame f) {
         String groupId = f.recipient;
-        String body = (f.body == null) ? "" : f.body.trim();
+        String line = (f.body == null) ? "" : f.body.trim();
 
         Platform.runLater(() -> {
             String currentPeer = controller.getCurrentPeer();
             if (currentPeer == null || !currentPeer.equals("group:" + groupId)) return;
-            if (body.isEmpty()) return;
+            if (line.isEmpty()) return;
 
-            // Giả định server gửi dạng: "sender: message"
-            int p = body.indexOf(":");
-            String sender = (p > 0) ? body.substring(0, p).trim() : "unknown";
-            String msg = (p > 0) ? body.substring(p + 1).trim() : body;
+            // Giả định server gửi "sender: message"
+            String sender;
+            String body;
+            int p = line.indexOf(':');
+            if (p > 0) {
+                sender = line.substring(0, p).trim();
+                body   = line.substring(p + 1).trim();
+            } else {
+                sender = "";
+                body   = line;
+            }
 
-            boolean incoming = true;
             String myName = (controller.getCurrentUser() != null)
                     ? controller.getCurrentUser().getUsername()
                     : "";
+            boolean incoming = !sender.equals(myName);
 
-            // Nếu chính mình gửi -> render bên phải và KHÔNG hiển thị tên
-            if (sender.equals(myName)) {
-                incoming = false;
-                controller.addTextMessage(msg, incoming);
-                System.out.println("[GROUP_HISTORY] render self msg: " + msg);
+            // Lấy messageId từ transferId (server đã set khi load history)
+            long msgId = 0L;
+            try { msgId = Long.parseLong(String.valueOf(f.transferId)); } catch (Exception ignore) {}
+            String msgIdStr = (msgId > 0) ? String.valueOf(msgId) : null;
+
+            // Tách prefix reply nếu có [REPLY:<id>]
+            String[] pr = parseReplyPrefix(body);
+            String clean = pr[0];
+            String replyToId = pr[1];
+            String head = (clean == null) ? "" : clean;
+
+            // CALLLOG trong group (nếu có)
+            if (head.startsWith("[CALLLOG]")) {
+                CallLogData d = parseCallLog(head);
+                renderCallLogOnce(d, incoming);
+                return;
+            }
+
+            HBox row = null;
+
+            // Tạm thời: giữ nguyên style "sender: ..." cho tin nhắn incoming trong group
+            String senderPrefix = (incoming && sender != null && !sender.isBlank())
+                    ? sender + ": "
+                    : "";
+
+            if (head.startsWith("[FILE]")) {
+                String name = head.substring(6).trim();
+                row = controller.addFileMessage(name, "", incoming, msgIdStr);
+                if (msgIdStr != null) {
+                    controller.getPendingHistoryFileRows().put(msgIdStr, row);
+                }
+                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
+                    String key = String.valueOf(msgId);
+                    if (markDownloadRequested(key)) {
+                        try {
+                            controller.getConnection().downloadFileByMsgId(msgId);
+                        } catch (IOException ignore) {}
+                    }
+                }
+
+            } else if (head.startsWith("[AUDIO]")) {
+                String dur = "--:--";
+                row = controller.addVoiceMessage(dur, incoming, msgIdStr);
+
+                if (msgIdStr != null) {
+                    controller.getPendingHistoryFileRows().put(msgIdStr, row);
+                }
+                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
+                    String key = String.valueOf(msgId);
+                    if (markDownloadRequested(key)) {
+                        try {
+                            controller.getConnection().downloadFileByMsgId(msgId);
+                        } catch (IOException ignore) {}
+                    }
+                }
+
+            } else if (head.startsWith("[VIDEO]")) {
+                String name = head.substring(7).trim();
+                row = controller.addVideoMessage(name, "", incoming, msgIdStr);
+
+                if (msgIdStr != null) {
+                    controller.getPendingHistoryFileRows().put(msgIdStr, row);
+                }
+                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
+                    String key = String.valueOf(msgId);
+                    if (markDownloadRequested(key)) {
+                        try {
+                            controller.getConnection().downloadFileByMsgId(msgId);
+                        } catch (IOException ignore) {}
+                    }
+                }
+
             } else {
-                // Người khác → render bên trái và hiển thị tên người gửi
-                controller.addTextMessage(sender + ": " + msg, incoming);
-                System.out.println("[GROUP_HISTORY] render other msg: " + sender + ": " + msg);
+                // Tin nhắn text thường
+                String text = incoming ? (senderPrefix + clean) : clean;
+                row = controller.addTextMessage(text, incoming, msgIdStr);
+            }
+
+            // Gắn metadata chung để sau này reply/edit/delete dùng được
+            if (row != null) {
+                if (msgIdStr != null && row.getUserData() == null) {
+                    row.setUserData(msgIdStr);
+                }
+                if (replyToId != null && row.getProperties().get("replyTo") == null) {
+                    row.getProperties().put("replyTo", replyToId);
+                    new UIMessageHandler(controller).attachReplyChipById(
+                            row,
+                            incoming, // incoming -> bubble bên trái
+                            replyToId
+                    );
+                }
             }
         });
     }
-
-
-
-
-
 }

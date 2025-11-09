@@ -400,83 +400,149 @@ public class ClientHandler implements Runnable {
                 upExpectedSeq++;
 
                 if (f.last) {
-                    upOut.flush(); upOut.close(); upOut = null;
+                    upOut.flush();
+                    upOut.close();
+                    upOut = null;
 
-                    long msgId  = 0L;
+                    long msgId = 0L;
                     long fileId = 0L;
 
                     try {
-                        // 1) Tạo message text đại diện file và lấy messageId
-//                      LƯU Ý: lưu *không có* prefix [REPLY], thay vào đó truyền reply_to qua DAO
                         String fileBody = "[FILE] " + upOrigName;
 
-                        // dùng overload mới có replyTo
-                        msgId = messageDao.saveSentReturnId(
-                                username,                // sender
-                                upToUser,                // recipient
-                                fileBody,                // body thuần
-                                upReplyTo                // reply_to (nullable)
-                        );
+                        // 1) Nhận diện group hay DM
+                        boolean isGroup = false;
+                        int groupId = -1;
 
-                        // 2) Lưu metadata file và lấy fileId
+                        if (upToUser != null) {
+                            String t = upToUser.trim();
+
+                            if (t.startsWith("group:")) {
+                                try {
+                                    groupId = Integer.parseInt(t.substring("group:".length()));
+                                    isGroup = true;
+                                } catch (NumberFormatException ignore) {}
+                            } else if (t.matches("\\d+")) {
+                                try {
+                                    int gid = Integer.parseInt(t);
+                                    // nếu user hiện tại là member của gid → xem như gửi file group
+                                    if (groupDao != null && groupDao.isMember(gid, username)) {
+                                        groupId = gid;
+                                        isGroup = true;
+                                    }
+                                } catch (NumberFormatException ignore) {}
+                            }
+                        }
+
+                        // 2) Lưu message
+                        if (isGroup) {
+                            // lưu vào bảng message group
+                            msgId = groupMessageDao.saveMessage(groupId, username, fileBody);
+                        } else {
+                            // DM như cũ
+                            msgId = messageDao.saveSentReturnId(
+                                    username,
+                                    upToUser,
+                                    fileBody,
+                                    upReplyTo
+                            );
+                        }
+
+                        // 3) Lưu file gắn với msgId
                         String filePath = new File(UPLOAD_DIR, sanitizeFilename(upFileId)).getAbsolutePath();
                         fileId = fileDao.save(msgId, upOrigName, filePath, upMime, upWritten);
-                        
+
                         System.out.println("[FILE/SAVE] sender=" + username
                                 + " to=" + upToUser
+                                + " isGroup=" + isGroup
+                                + " groupId=" + groupId
                                 + " msgId=" + msgId
                                 + " fileId=" + fileId
                                 + " origName=" + upOrigName
                                 + " mime=" + upMime
                                 + " bytes=" + upWritten
                                 + " replyTo=" + upReplyTo);
+
                         if (fileId > 0) uuidToFileId.put(upFileId, fileId);
                         if (msgId  > 0) uuidToMsgId.put(upFileId, msgId);
+
+                        // 4) ACK cho sender (giữ nguyên)
+                        String ackJson = "{"
+                                + "\"status\":\"FILE_SAVED\","
+                                + "\"messageId\":" + msgId + ","
+                                + "\"fileId\":" + fileId + ","
+                                + "\"bytes\":" + upWritten + ","
+                                + "\"mime\":\"" + escJson(upMime) + "\""
+                                + "}";
+                        Frame ack = Frame.ack(ackJson);
+                        ack.transferId = upFileId;
+                        sendFrame(ack);
+
+                        // 5) Broadcast realtime
+                        if (isGroup && groupId > 0) {
+                            // Gửi cho tất cả member online trong group
+                            List<String> members = groupDao.listMembers(groupId);
+                            if (members != null) {
+                                String json = "{"
+                                        + "\"from\":\"" + escJson(username) + "\","
+                                        + "\"to\":\"group:" + groupId + "\","
+                                        + "\"uuid\":\"" + escJson(upFileId) + "\","
+                                        + "\"id\":\""   + escJson(upFileId) + "\","
+                                        + "\"fileId\":" + fileId + ","
+                                        + "\"messageId\":" + msgId + ","
+                                        + "\"replyTo\":" + (upReplyTo == null ? "null" : upReplyTo) + ","
+                                        + "\"name\":\"" + escJson(upOrigName) + "\","
+                                        + "\"mime\":\"" + escJson(upMime) + "\","
+                                        + "\"bytes\":"  + upWritten
+                                        + "}";
+
+                                for (String m : members) {
+                                    if (m.equals(username)) continue; // sender tự render local
+                                    ClientHandler target = online.get(m);
+                                    if (target != null) {
+                                        Frame evt = new Frame(
+                                                MessageType.FILE_EVT,
+                                                username,
+                                                String.valueOf(groupId), // recipient = groupId
+                                                json
+                                        );
+                                        System.out.println("[FILE/EVT][GROUP] push to member="
+                                                + m + " groupId=" + groupId
+                                                + " fileId=" + fileId
+                                                + " msgId=" + msgId);
+                                        target.sendFrame(evt);
+                                    }
+                                }
+                            }
+                        } else if (upToUser != null && !upToUser.isBlank()) {
+                            // DM cũ giữ nguyên
+                            ClientHandler target = online.get(upToUser);
+                            if (target != null) {
+                                String json = "{"
+                                        + "\"from\":\"" + escJson(username) + "\","
+                                        + "\"to\":\""   + escJson(upToUser) + "\","
+                                        + "\"uuid\":\"" + escJson(upFileId) + "\","
+                                        + "\"id\":\""   + escJson(upFileId) + "\","
+                                        + "\"fileId\":" + fileId + ","
+                                        + "\"messageId\":" + msgId + ","
+                                        + "\"replyTo\":" + (upReplyTo == null ? "null" : upReplyTo) + ","
+                                        + "\"name\":\"" + escJson(upOrigName) + "\","
+                                        + "\"mime\":\"" + escJson(upMime) + "\","
+                                        + "\"bytes\":"  + upWritten
+                                        + "}";
+                                Frame evt = new Frame(MessageType.FILE_EVT, username, upToUser, json);
+                                System.out.println("[FILE/EVT][DM] push to=" + upToUser
+                                        + " fileId=" + fileId
+                                        + " msgId=" + msgId);
+                                target.sendFrame(evt);
+                            }
+                        }
+
                     } catch (SQLException sqle) {
                         System.err.println("[DB] Failed to save file metadata: " + sqle.getMessage());
                     }
 
-                 // 3) Gửi ACK cho client GỬI: giữ nguyên transferId = uuid; body = JSON
-                    String ackJson = "{"
-                            + "\"status\":\"FILE_SAVED\","
-                            + "\"messageId\":" + msgId + ","
-                            + "\"fileId\":" + fileId + ","
-                            + "\"bytes\":" + upWritten + ","
-                            + "\"mime\":\"" + escJson(upMime) + "\""
-                            + "}";
-
-                    Frame ack = Frame.ack(ackJson);
-                    ack.transferId = upFileId; // uuid
-                    sendFrame(ack);
-
-                    // 4) Push sự kiện cho người nhận (realtime)
-                    if (upToUser != null && !upToUser.isBlank()) {
-                        ClientHandler target = online.get(upToUser);
-                        if (target != null) {
-                            String savedName = sanitizeFilename(upOrigName);
-                            String json = "{"
-                                    + "\"from\":\"" + escJson(username) + "\","
-                                    + "\"to\":\""   + escJson(upToUser) + "\","
-                                    + "\"uuid\":\"" + escJson(upFileId) + "\","
-                                    + "\"id\":\""   + escJson(upFileId) + "\","
-                                    + "\"fileId\":" + fileId + ","
-                                    + "\"messageId\":" + msgId + ","
-                                    + "\"replyTo\":" + (upReplyTo == null ? "null" : upReplyTo) + ","  // << thêm replyTo
-                                    + "\"name\":\"" + escJson(savedName) + "\","
-                                    + "\"mime\":\"" + escJson(upMime) + "\","
-                                    + "\"bytes\":"  + upWritten
-                                    + "}";
-                            Frame evt = new Frame(MessageType.FILE_EVT, username, upToUser, json);
-                            System.out.println("[FILE/EVT] push to=" + upToUser
-                                    + " uuid=" + upFileId
-                                    + " fileId=" + fileId
-                                    + " messageId=" + msgId
-                                    + " replyTo=" + upReplyTo);
-                            target.sendFrame(evt);
-                        }
-                    }
-
-                 // 5) Reset state phiên upload
+                    // 6) Reset state
                     upFileId = null;
                     upToUser = null;
                     upOrigName = null;
@@ -484,7 +550,7 @@ public class ClientHandler implements Runnable {
                     upDeclaredSize = 0;
                     upExpectedSeq = 0;
                     upWritten = 0;
-                    upReplyTo = null; // << reset
+                    upReplyTo = null;
                 }
                 return;
             }
@@ -1078,7 +1144,7 @@ public class ClientHandler implements Runnable {
     /* ================= GROUP HISTORY ================= */
     private void handleGroupHistory(Frame f) {
         try {
-        	int groupId = Integer.parseInt(f.recipient.replace("group:", ""));
+            int groupId = Integer.parseInt(f.recipient.replace("group:", ""));
             int limit = 50;
             try { limit = Integer.parseInt(f.body); } catch (Exception ignore) {}
 
@@ -1087,20 +1153,36 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            var messages = groupMessageDao.loadRecentMessages(groupId, limit);
-            for (String line : messages) {
-                Frame hist = new Frame(MessageType.GROUP_HISTORY, "server", String.valueOf(groupId), line);
+            // dùng model mới
+            List<common.GroupMessage> messages = groupMessageDao.loadRecentMessages(groupId, limit);
+
+            for (common.GroupMessage m : messages) {
+                // giữ format "sender: body" vì client đang parse như vậy
+                String line = m.getSender() + ": " + (m.getBody() == null ? "" : m.getBody());
+
+                Frame hist = new Frame(
+                        MessageType.GROUP_HISTORY,
+                        m.getSender(),
+                        String.valueOf(groupId),
+                        line
+                );
+                // ✅ CỰC QUAN TRỌNG: để client coi đây là messageId
+                hist.transferId = String.valueOf(m.getId());
+
                 sendFrame(hist);
             }
 
             sendFrame(Frame.ack("OK GROUP_HISTORY " + messages.size()));
 
         } catch (SQLException e) {
+            e.printStackTrace();
             sendFrame(Frame.error("DB_GROUP_HISTORY_FAIL"));
         } catch (Exception e) {
+            e.printStackTrace();
             sendFrame(Frame.error("GROUP_HISTORY_FAIL"));
         }
     }
+
 
     /* ================= Helpers ================= */
     private void broadcast(String msg, boolean excludeSelf) {

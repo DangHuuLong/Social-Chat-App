@@ -1,5 +1,7 @@
 package server.dao;
 
+import common.GroupMessage;
+
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,15 +29,25 @@ public class GroupMessageDao {
     }
 
     // === LIST HISTORY ===
-    public List<String> loadRecentMessages(int groupId, int limit) throws SQLException {
-        String sql = "SELECT CONCAT(sender, ': ', body) AS line FROM group_messages " +
-                     "WHERE group_id=? ORDER BY id ASC LIMIT ?";
+    public List<GroupMessage> loadRecentMessages(int groupId, int limit) throws SQLException {
+        String sql = """
+            SELECT id, sender, body
+            FROM group_messages
+            WHERE group_id = ?
+            ORDER BY id ASC
+            LIMIT ?
+            """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, groupId);
-            ps.setInt(2, limit);	
+            ps.setInt(2, limit);
             try (ResultSet rs = ps.executeQuery()) {
-                List<String> msgs = new ArrayList<>();
-                while (rs.next()) msgs.add(rs.getString("line"));
+                List<GroupMessage> msgs = new ArrayList<>();
+                while (rs.next()) {
+                    long id = rs.getLong("id");
+                    String sender = rs.getString("sender");
+                    String body = rs.getString("body");
+                    msgs.add(new GroupMessage(id, groupId, sender, body));
+                }
                 return msgs;
             }
         }
