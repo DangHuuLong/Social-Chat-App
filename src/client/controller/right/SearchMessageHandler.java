@@ -70,23 +70,29 @@ public class SearchMessageHandler {
             results.getChildren().clear();
             String raw = input.getText() == null ? "" : input.getText().trim();
             if (raw.isEmpty() || mid == null) return;
+
             String key = normalizeKey(raw);
             List<client.controller.MidController.MsgView> all = mid.exportMessagesForSearch();
             List<Item> matched = new ArrayList<>();
+
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+
             for (client.controller.MidController.MsgView v : all) {
-            	String norm = normalizeKey(v.text());
+                String norm = normalizeKey(v.text());
 
-            	// ✅ Bỏ phần username nếu có
-            	int colon = norm.indexOf(":");
-            	String msgOnly = (colon >= 0 && colon + 1 < norm.length())
-            	        ? norm.substring(colon + 1).trim()
-            	        : norm;
+                int colon = norm.indexOf(":");
+                String msgOnly = (colon >= 0 && colon + 1 < norm.length())
+                        ? norm.substring(colon + 1).trim()
+                        : norm;
 
-            	if (msgOnly.contains(key)) {
-            	    matched.add(new Item(v.epochMillis(), v.incoming(), v.text()));
-            	}
-
+                if (msgOnly.contains(key)) {
+                    String sig = v.epochMillis() + "|" + v.incoming() + "|" + v.text();
+                    if (seen.add(sig)) { 
+                        matched.add(new Item(v.epochMillis(), v.incoming(), v.text()));
+                    }
+                }
             }
+
             matched.sort(Comparator.comparingLong(a -> a.ts));
 
             var zone = ZoneId.systemDefault();
@@ -135,6 +141,7 @@ public class SearchMessageHandler {
                 results.getChildren().add(none);
             }
         };
+
 
         btnSearch.setOnAction(e -> doSearch.run());
         input.setOnAction(e -> doSearch.run());
