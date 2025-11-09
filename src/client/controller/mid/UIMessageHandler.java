@@ -117,12 +117,7 @@ public class UIMessageHandler {
                     long id = Long.parseLong(String.valueOf(msgId));
                     if (controller.getConnection() != null && controller.getConnection().isAlive()) {
                         System.out.println("[MENU] EDIT send id=" + id);
-                        controller.getConnection().editMessage(
-                            id,
-                            controller.getCurrentUser().getUsername(),
-                            controller.getSelectedUser().getUsername(),
-                            trimmed
-                        );
+                        controller.getConnection().editMessage(id, trimmed);
                     } else {
                         System.out.println("[MENU] EDIT skipped, no connection");
                     }

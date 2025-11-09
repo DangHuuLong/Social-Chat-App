@@ -607,7 +607,11 @@ public class MessageHandler {
 
     private void handleAckFrame(Frame f) {
         String body = (f.body == null) ? "" : f.body;
-        if (f.transferId != null && (body.startsWith("OK DM") || body.startsWith("OK QUEUED"))) {
+        if (f.transferId != null && (
+                body.startsWith("OK DM")
+             || body.startsWith("OK QUEUED")
+             || body.startsWith("OK GROUP_MSG_SENT")
+        )) {
             controller.tagNextPendingOutgoing(f.transferId);
             return;
         }
@@ -990,20 +994,73 @@ public class MessageHandler {
 
     private void handleGroupMsgFrame(Frame f) {
         String sender = f.sender;
-        String body = f.body == null ? "" : f.body;
-        String groupId = f.recipient; // ví dụ: "11"
+        String body = (f.body == null) ? "" : f.body;
+        String groupId = f.recipient; // ví dụ "11"
 
         Platform.runLater(() -> {
-            // Nếu đang mở đúng group này thì render tin nhắn
+            // Chỉ render nếu đang mở đúng group
             String currentPeer = controller.getCurrentPeer();
-            if (currentPeer != null && currentPeer.equals("group:" + groupId)) {
-                controller.addTextMessage(sender + ": " + body, true);
-            } else {
-                // Tùy chọn: hiển thị thông báo mini hoặc highlight sidebar
-                System.out.println("[GROUP_MSG] Tin nhắn tới group " + groupId + " (từ " + sender + ") nhưng user không mở group này.");
+            if (currentPeer == null || !currentPeer.equals("group:" + groupId)) {
+                System.out.println("[GROUP_MSG] Tin nhắn tới group " + groupId
+                        + " (từ " + sender + ") nhưng user không mở group này.");
+                return;
+            }
+
+            // Xác định incoming / outgoing
+            String myName = (controller.getCurrentUser() != null)
+                    ? controller.getCurrentUser().getUsername()
+                    : "";
+            boolean incoming = !sender.equals(myName);
+
+            // Lấy messageId từ transferId (server phải set = id trong DB)
+            long msgId = 0L;
+            try {
+                msgId = Long.parseLong(String.valueOf(f.transferId));
+            } catch (Exception ignore) {}
+            String msgIdStr = (msgId > 0) ? String.valueOf(msgId) : null;
+
+            // Tách prefix reply nếu có [REPLY:<id>]
+            String[] pr = parseReplyPrefix(body);
+            String clean = pr[0];
+            String replyToId = pr[1];
+            String head = (clean == null) ? "" : clean;
+
+            // CALLLOG trong group (nếu có)
+            if (head.startsWith("[CALLLOG]")) {
+                CallLogData d = parseCallLog(head);
+                renderCallLogOnce(d, incoming);
+                return;
+            }
+
+            // Prefix tên người gửi cho tin incoming
+            String senderPrefix = (incoming && sender != null && !sender.isBlank())
+                    ? sender + ": "
+                    : "";
+
+            // Tạo bubble: outgoing không cần prefix, incoming có prefix
+            HBox row = controller.addTextMessage(
+                    incoming ? (senderPrefix + clean) : clean,
+                    incoming,
+                    msgIdStr
+            );
+
+            // Gắn messageId để EDIT_MSG / DELETE_MSG dùng được
+            if (msgIdStr != null && row.getUserData() == null) {
+                row.setUserData(msgIdStr);
+            }
+
+            // Gắn replyTo + vẽ chip trả lời nếu có
+            if (replyToId != null && row.getProperties().get("replyTo") == null) {
+                row.getProperties().put("replyTo", replyToId);
+                new UIMessageHandler(controller).attachReplyChipById(
+                        row,
+                        incoming,   // incoming -> bubble bên trái
+                        replyToId
+                );
             }
         });
     }
+
     private void handleGroupHistoryFrame(Frame f) {
         String groupId = f.recipient;
         String line = (f.body == null) ? "" : f.body.trim();

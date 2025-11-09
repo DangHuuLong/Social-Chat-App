@@ -167,15 +167,28 @@ public class ClientConnection {
     }
 
     public void deleteMessage(long id) throws IOException {
-        Frame f = new Frame(MessageType.DELETE_MSG, "", "", String.valueOf(id));
-        sendFrame(f);
-    }
-    
-    public void editMessage(long id, String from, String to, String newBody) throws IOException {
-        Frame f = new Frame(MessageType.EDIT_MSG, from, to, newBody);
+        String from = "";
+        if (midController != null && midController.getCurrentUser() != null) {
+            from = midController.getCurrentUser().getUsername();
+        }
+        Frame f = new Frame(MessageType.DELETE_MSG, from, "", String.valueOf(id));
         f.transferId = String.valueOf(id);
         sendFrame(f);
     }
+
+    public void editMessage(long id, String newBody) throws IOException {
+        if (newBody == null) return;
+
+        String from = "";
+        if (midController != null && midController.getCurrentUser() != null) {
+            from = midController.getCurrentUser().getUsername();
+        }
+
+        Frame f = new Frame(MessageType.EDIT_MSG, from, "", newBody);
+        f.transferId = String.valueOf(id);
+        sendFrame(f);
+    }
+
     
     public void search(String from, String peer, String query, int limit, int offset) throws IOException {
         String q = (query == null) ? "" : query;

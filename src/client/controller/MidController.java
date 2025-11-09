@@ -461,29 +461,68 @@ public class MidController implements CallSignalListener {
             return;
         }
 
+     // ================== NHÁNH GROUP ==================
         if (currentPeer != null && currentPeer.startsWith("group:")) {
             try {
                 int groupId = Integer.parseInt(currentPeer.substring("group:".length()));
 
-                // Gửi frame tin nhắn nhóm lên server
+                Long replyTo = null;
+                if (hasReplyContext()) {
+                    HBox row = getReplyingRow();
+                    if (row != null) {
+                        Object ud = row.getUserData();
+                        if (ud != null) {
+                            try { replyTo = Long.parseLong(String.valueOf(ud)); } catch (Exception ignore) {}
+                        }
+                        if (replyTo == null) {
+                            Object fid = row.getProperties().get("fid");
+                            if (fid != null) {
+                                try { replyTo = Long.parseLong(String.valueOf(fid)); } catch (Exception ignore) {}
+                            }
+                        }
+                        if (replyTo == null) {
+                            Object r2 = row.getProperties().get("replyTo");
+                            if (r2 != null) {
+                                try { replyTo = Long.parseLong(String.valueOf(r2)); } catch (Exception ignore) {}
+                            }
+                        }
+                    }
+                }
+
+                String wireBody = (replyTo != null && replyTo > 0)
+                        ? "[REPLY:" + replyTo + "]" + text
+                        : text;
+
                 Frame frame = new Frame(
                         MessageType.GROUP_MSG,
-                        currentUser.getUsername(),
-                        String.valueOf(groupId), 
-                        text
-                    );
+                        currentUser != null ? currentUser.getUsername() : "",
+                        String.valueOf(groupId),
+                        wireBody
+                );
                 connection.sendFrame(frame);
 
-                // Render local cho mượt
-                addTextMessage(text, false);
-                messageField.clear();
+                // Bubble local
+                HBox row = addTextMessage(text, false);
+                // ✅ Đánh dấu pending để khi server trả messageId thì map vào
+                enqueuePendingOutgoing(row);
 
+                if (replyTo != null && replyTo > 0) {
+                    row.getProperties().put("replyTo", String.valueOf(replyTo));
+                    new UIMessageHandler(this).attachReplyChipById(
+                            row,
+                            false,
+                            String.valueOf(replyTo)
+                    );
+                }
+
+                messageField.clear();
+                clearReplyPreview();
             } catch (Exception e) {
                 showErrorAlert("Không gửi được tin nhắn nhóm: " + e.getMessage());
             }
-            return; 
+            return;
         }
-
+        
         new MessageHandler(this).onSendMessage();
         clearReplyPreview();
     }

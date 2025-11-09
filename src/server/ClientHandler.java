@@ -4,6 +4,7 @@ import server.dao.MessageDao;
 import server.signaling.CallRouter;
 import common.Frame;
 import common.FrameIO;
+import common.GroupMessage;
 import common.MessageType;
 import server.dao.FileDao;
 import server.dao.GroupDao;
@@ -268,18 +269,50 @@ public class ClientHandler implements Runnable {
         try {
             long id = parseLongSafe(f.transferId != null ? f.transferId : f.body, 0L);
             if (id <= 0) { sendFrame(Frame.error("BAD_ID")); return; }
-            String newBody = (f.body == null) ? "" : f.body;
+            String newBodyRaw = (f.body == null) ? "" : f.body;
 
-            String peer = messageDao.updateByIdReturningPeer(id, username, newBody);
-            if (peer == null) { sendFrame(Frame.error("DENIED_OR_NOT_FOUND")); return; }
+            // 1) thử edit trong bảng DM
+            String peer = messageDao.updateByIdReturningPeer(id, username, newBodyRaw);
+            if (peer != null) {
+                Frame ack = Frame.ack("OK EDIT"); ack.transferId = String.valueOf(id); sendFrame(ack);
 
-            Frame ack = Frame.ack("OK EDIT"); ack.transferId = String.valueOf(id); sendFrame(ack);
+                Frame evt = new Frame(MessageType.EDIT_MSG, username, peer, newBodyRaw);
+                evt.transferId = String.valueOf(id);
+                ClientHandler peerHandler = online.get(peer);
+                if (peerHandler != null) peerHandler.sendFrame(evt);
+                return;
+            }
 
-            Frame evt = new Frame(MessageType.EDIT_MSG, username, peer, newBody);
-            evt.transferId = String.valueOf(id);
-            ClientHandler peerHandler = online.get(peer);
-            if (peerHandler != null) peerHandler.sendFrame(evt);
+            // 2) nếu không phải DM => thử group
+            Integer groupId = groupMessageDao.updateByIdReturningGroup(id, username, newBodyRaw);
+            if (groupId == null) {
+                sendFrame(Frame.error("DENIED_OR_NOT_FOUND"));
+                return;
+            }
+
+            // ACK cho sender
+            Frame ack = Frame.ack("OK GROUP_EDIT");
+            ack.transferId = String.valueOf(id);
+            sendFrame(ack);
+
+            // Broadcast cho members
+            List<String> members = groupDao.listMembers(groupId);
+            for (String m : members) {
+                ClientHandler target = online.get(m);
+                if (target != null && !m.equals(username)) {
+                    Frame evt = new Frame(
+                            MessageType.EDIT_MSG,
+                            username,
+                            String.valueOf(groupId),
+                            newBodyRaw
+                    );
+                    evt.transferId = String.valueOf(id);
+                    target.sendFrame(evt);
+                }
+            }
+
         } catch (Exception e) {
+            e.printStackTrace();
             sendFrame(Frame.error("EDIT_FAIL"));
         }
     }
@@ -437,7 +470,7 @@ public class ClientHandler implements Runnable {
                         // 2) Lưu message
                         if (isGroup) {
                             // lưu vào bảng message group
-                            msgId = groupMessageDao.saveMessage(groupId, username, fileBody);
+                            msgId = groupMessageDao.saveMessage(groupId, username, fileBody, upReplyTo);
                         } else {
                             // DM như cũ
                             msgId = messageDao.saveSentReturnId(
@@ -765,34 +798,68 @@ public class ClientHandler implements Runnable {
     /* ================= DELETE MESSAGE ================= */
     private void handleDeleteMessage(Frame f) {
         try {
-            long id = parseLongSafe(f.body, 0L);
+            long id = parseLongSafe(f.transferId != null ? f.transferId : f.body, 0L);
             if (id <= 0) { sendFrame(Frame.error("BAD_ID")); return; }
+
+            // 1) thử delete trong DM
             String peer = messageDao.deleteByIdReturningPeer(id, username);
-            
-            try {
-                FileResource fileRow = fileDao.getByMessageId(id);
-                if (fileRow != null) {
-                    fileDao.deleteByMessageId(id);
-                    File toDelete = new File(fileRow.getFilePath());
-                    if (toDelete.exists()) toDelete.delete();
+            if (peer != null) {
+                // xoá file DM nếu có
+                try {
+                    FileResource fileRow = fileDao.getByMessageId(id);
+                    if (fileRow != null) {
+                        fileDao.deleteByMessageId(id);
+                        File toDelete = new File(fileRow.getFilePath());
+                        if (toDelete.exists()) toDelete.delete();
+                    }
+                } catch (SQLException ignore) {}
+
+                Frame ack = Frame.ack("OK DELETE");
+                ack.transferId = String.valueOf(id);
+                sendFrame(ack);
+
+                ClientHandler peerHandler = online.get(peer);
+                if (peerHandler != null) {
+                    Frame evt = new Frame(MessageType.DELETE_MSG, username, peer, "");
+                    evt.transferId = String.valueOf(id);
+                    peerHandler.sendFrame(evt);
                 }
-            } catch (SQLException ignore) {}
+                return;
+            }
 
-            if (peer == null) { sendFrame(Frame.error("DENIED_OR_NOT_FOUND")); return; }
+            // 2) nếu không phải DM => group
+            Integer groupId = groupMessageDao.deleteByIdReturningGroup(id, username);
+            if (groupId == null) {
+                sendFrame(Frame.error("DENIED_OR_NOT_FOUND"));
+                return;
+            }
 
-            Frame ack = Frame.ack("OK DELETE");
+            Frame ack = Frame.ack("OK GROUP_DELETE");
             ack.transferId = String.valueOf(id);
             sendFrame(ack);
 
-            Frame evt = new Frame(MessageType.DELETE_MSG, username, peer, "");
-            evt.transferId = String.valueOf(id);
-            ClientHandler peerHandler = online.get(peer);
-            if (peerHandler != null) peerHandler.sendFrame(evt);
+            // broadcast tới các member
+            List<String> members = groupDao.listMembers(groupId);
+            for (String m : members) {
+                ClientHandler target = online.get(m);
+                if (target != null && !m.equals(username)) {
+                    Frame evt = new Frame(
+                            MessageType.DELETE_MSG,
+                            username,
+                            String.valueOf(groupId),
+                            ""
+                    );
+                    evt.transferId = String.valueOf(id);
+                    target.sendFrame(evt);
+                }
+            }
 
         } catch (Exception e) {
+            e.printStackTrace();
             sendFrame(Frame.error("DELETE_FAIL"));
         }
     }
+
     /* GROUP */
     /* ================= CREATE GROUP ================= */
     private void handleCreateGroup(Frame f) {
@@ -1098,7 +1165,10 @@ public class ClientHandler implements Runnable {
             int groupId = Integer.parseInt(f.recipient); // <== kiểm tra lỗi parse
             System.out.println("[SERVER] parsed groupId=" + groupId);
 
-            String msgBody = (f.body == null) ? "" : f.body.trim();
+            String msgBodyRaw = (f.body == null) ? "" : f.body;
+            StringBuilder buf = new StringBuilder(msgBodyRaw);
+            Long replyTo = extractReplyIdAndStrip(buf);
+            String msgBody = buf.toString().trim();
             System.out.println("[SERVER] msgBody='" + msgBody + "'");
 
             if (groupDao == null) throw new RuntimeException("groupDao is null");
@@ -1112,7 +1182,7 @@ public class ClientHandler implements Runnable {
             }
 
             System.out.println("[SERVER] saving message...");
-            long msgId = groupMessageDao.saveMessage(groupId, username, msgBody);
+            long msgId = groupMessageDao.saveMessage(groupId, username, msgBody, replyTo);
             System.out.println("[SERVER] message saved with id=" + msgId);
 
             var members = groupDao.listMembers(groupId);
@@ -1121,16 +1191,20 @@ public class ClientHandler implements Runnable {
             for (String m : members) {
                 System.out.println("[SERVER] pushing to member " + m);
                 if (m.equals(username)) continue;
+                if (m.equals(username)) continue;
                 ClientHandler target = online.get(m);
                 if (target != null) {
-                    Frame gf = new Frame(MessageType.GROUP_MSG, username, String.valueOf(groupId), msgBody);
-                    gf.transferId = String.valueOf(msgId);
-                    target.sendFrame(gf);
+                	Frame gf = new Frame(MessageType.GROUP_MSG, username, String.valueOf(groupId),
+                	        prependReplyTag(msgBody, replyTo));
+                	gf.transferId = String.valueOf(msgId);
+                	target.sendFrame(gf);
                 }
             }
 
             System.out.println("[SERVER] ack to sender");
-            sendFrame(Frame.ack("OK GROUP_MSG_SENT " + msgId));
+            Frame ack = Frame.ack("OK GROUP_MSG_SENT");
+            ack.transferId = String.valueOf(msgId);
+            sendFrame(ack);
 
         } catch (SQLException e) {
             e.printStackTrace();
@@ -1153,12 +1227,11 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // dùng model mới
-            List<common.GroupMessage> messages = groupMessageDao.loadRecentMessages(groupId, limit);
+            List<GroupMessage> messages = groupMessageDao.loadRecentMessages(groupId, limit);
 
-            for (common.GroupMessage m : messages) {
-                // giữ format "sender: body" vì client đang parse như vậy
-                String line = m.getSender() + ": " + (m.getBody() == null ? "" : m.getBody());
+            for (GroupMessage m : messages) {
+                String bodyWithReply = prependReplyTag(m.getBody(), m.getReplyTo());
+                String line = m.getSender() + ": " + (bodyWithReply == null ? "" : bodyWithReply);
 
                 Frame hist = new Frame(
                         MessageType.GROUP_HISTORY,
@@ -1166,11 +1239,10 @@ public class ClientHandler implements Runnable {
                         String.valueOf(groupId),
                         line
                 );
-                // ✅ CỰC QUAN TRỌNG: để client coi đây là messageId
-                hist.transferId = String.valueOf(m.getId());
-
+                hist.transferId = String.valueOf(m.getId()); // quan trọng
                 sendFrame(hist);
             }
+
 
             sendFrame(Frame.ack("OK GROUP_HISTORY " + messages.size()));
 
