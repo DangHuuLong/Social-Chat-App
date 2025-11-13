@@ -16,6 +16,7 @@ import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+import javafx.scene.layout.Priority; 
 import javafx.scene.shape.Circle;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
@@ -54,7 +55,24 @@ public class MainController {
         TextField username = new TextField(); username.setPromptText("Tên đăng nhập");
         PasswordField password = new PasswordField(); password.setPromptText("Mật khẩu");
         PasswordField confirmField = (mode == AuthMode.REGISTER) ? new PasswordField() : null;
+        username.setMaxWidth(Double.MAX_VALUE);
+        password.setMaxWidth(Double.MAX_VALUE);
+        if (confirmField != null) {
+            confirmField.setMaxWidth(Double.MAX_VALUE);
+        }
         if (confirmField != null) confirmField.setPromptText("Xác nhận mật khẩu");
+
+        Label pwdErrorLabel = null;
+        Label confirmErrorLabel = null;
+        if (mode == AuthMode.REGISTER) {
+            pwdErrorLabel = new Label();
+            pwdErrorLabel.setStyle("-fx-text-fill: red; -fx-font-size: 11;");
+
+            confirmErrorLabel = new Label();
+            confirmErrorLabel.setStyle("-fx-text-fill: red; -fx-font-size: 11;");
+        }
+        final Label finalPwdErrorLabel = pwdErrorLabel;
+        final Label finalConfirmErrorLabel = confirmErrorLabel;
 
         final byte[][] selectedAvatarBytes = new byte[1][];
         final String[] selectedAvatarMime  = new String[1];
@@ -65,6 +83,7 @@ public class MainController {
 
         VBox rootBox = new VBox(12);
         rootBox.setPadding(new Insets(10));
+        rootBox.setFillWidth(true);
 
         if (mode == AuthMode.REGISTER) {
             avatarView = new ImageView();
@@ -127,25 +146,80 @@ public class MainController {
         GridPane gp = new GridPane();
         gp.setHgap(10); gp.setVgap(10);
         gp.addRow(0, new Label("Tên:"), username);
-        gp.addRow(1, new Label("Mật khẩu:"), password);
-        if (confirmField != null) gp.addRow(2, new Label("Xác nhận:"), confirmField);
+
+        if (mode == AuthMode.REGISTER) {
+            VBox pwdBox = new VBox(4, password, finalPwdErrorLabel);
+            pwdBox.setMaxWidth(Double.MAX_VALUE);
+            GridPane.setHgrow(pwdBox, Priority.ALWAYS);         
+
+            VBox confirmBox = new VBox(4, confirmField, finalConfirmErrorLabel);
+            confirmBox.setMaxWidth(Double.MAX_VALUE);
+            GridPane.setHgrow(confirmBox, Priority.ALWAYS);
+
+            gp.addRow(1, new Label("Mật khẩu:"), pwdBox);
+            gp.addRow(2, new Label("Xác nhận:"), confirmBox);
+        } else {
+            gp.addRow(1, new Label("Mật khẩu:"), password);
+            GridPane.setHgrow(password, Priority.ALWAYS);      
+        }
+
 
         rootBox.getChildren().add(gp);
         dialog.getDialogPane().setContent(rootBox);
-
+        rootBox.setAlignment(Pos.CENTER);
+        dialog.getDialogPane().setMinWidth(420);
+        dialog.getDialogPane().setPrefWidth(420);
+        dialog.getDialogPane().setMaxWidth(420);
         Button okBtn = (Button) dialog.getDialogPane().lookupButton(okType);
         okBtn.setDisable(true);
 
         Runnable validate = () -> {
-            boolean valid = !username.getText().isBlank() && !password.getText().isBlank();
-            if (mode == AuthMode.REGISTER) {
-                valid = valid && confirmField != null && password.getText().equals(confirmField.getText());
+            String u = username.getText().trim();
+            String p = password.getText();
+
+            boolean validUsername = !u.isBlank();
+            boolean validPasswordNotEmpty = !p.isBlank();
+
+            if (finalPwdErrorLabel != null) {
+                finalPwdErrorLabel.setText("");
             }
-            okBtn.setDisable(!valid);
+            if (finalConfirmErrorLabel != null) {
+                finalConfirmErrorLabel.setText("");
+            }
+
+            if (mode == AuthMode.REGISTER) {
+                boolean strongPwd = isStrongPassword(p);
+
+                if (!p.isEmpty() && !strongPwd) {
+                    if (finalPwdErrorLabel != null) {
+                        finalPwdErrorLabel.setText(
+                            "Mật khẩu phải ≥ 8 ký tự, gồm chữ, số và ký tự đặc biệt."
+                        );
+                    }
+                }
+
+                boolean confirmOk = false;
+                if (confirmField != null) {
+                    String c = confirmField.getText();
+                    confirmOk = !c.isEmpty() && p.equals(c);
+                    if (!c.isEmpty() && !p.equals(c)) {
+                        if (finalConfirmErrorLabel != null) {
+                            finalConfirmErrorLabel.setText("Mật khẩu xác nhận không khớp.");
+                        }
+                    }
+                }
+
+                boolean valid = validUsername && strongPwd && confirmOk;
+                okBtn.setDisable(!valid);
+            } else {
+                boolean valid = validUsername && validPasswordNotEmpty;
+                okBtn.setDisable(!valid);
+            }
         };
-        username.textProperty().addListener((o,a,b)->validate.run());
-        password.textProperty().addListener((o,a,b)->validate.run());
-        if (confirmField != null) confirmField.textProperty().addListener((o,a,b)->validate.run());
+
+        username.textProperty().addListener((o, a, b) -> validate.run());
+        password.textProperty().addListener((o, a, b) -> validate.run());
+        if (confirmField != null) confirmField.textProperty().addListener((o, a, b) -> validate.run());
         validate.run();
 
         dialog.setResultConverter(bt -> bt == okType);
@@ -178,6 +252,25 @@ public class MainController {
                 showAlert(Alert.AlertType.ERROR, "Lỗi CSDL: " + e.getMessage());
             }
         }
+    }
+
+    private static boolean isStrongPassword(String p) {
+        if (p == null || p.length() < 8) return false;
+
+        boolean hasLetter = false;
+        boolean hasDigit = false;
+        boolean hasSpecial = false;
+
+        for (char c : p.toCharArray()) {
+            if (Character.isLetter(c)) {
+                hasLetter = true;
+            } else if (Character.isDigit(c)) {
+                hasDigit = true;
+            } else {
+                hasSpecial = true;
+            }
+        }
+        return hasLetter && hasDigit && hasSpecial;
     }
 
     private static String guessMimeByName(String name) {
