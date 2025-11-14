@@ -1,6 +1,9 @@
 package server;
 
 import server.dao.MessageDao;
+import server.dao.UserDAO;
+import common.User;
+import java.util.Base64;
 import server.signaling.CallRouter;
 import common.Frame;
 import common.FrameIO;
@@ -32,7 +35,8 @@ public class ClientHandler implements Runnable {
     private final GroupMessageDao groupMessageDao;
     private DataInputStream binIn;
     private DataOutputStream binOut;
-
+    private int userId = -1;    
+    private final UserDAO userDao = new UserDAO();
     private String username = null;
     private static final File UPLOAD_DIR = new File("uploads");
     private static final Map<String, String> fileNameMap = new ConcurrentHashMap<>();
@@ -79,6 +83,8 @@ public class ClientHandler implements Runnable {
                 if (f == null) break;
 
                 switch (f.type) {
+	                case AUTH_REGISTER -> handleAuthRegister(f);
+	                case AUTH_LOGIN    -> handleAuthLogin(f);
                     case REGISTER, LOGIN -> handleLogin(f);
                     case DM -> handleDirectMessage(f);
                     case HISTORY -> handleHistory(f);
@@ -107,7 +113,6 @@ public class ClientHandler implements Runnable {
                     case LIST_MEMBERS -> handleListMember(f);
                     case GROUP_MSG -> handleGroupMessage(f);
                     case GROUP_HISTORY -> handleGroupHistory(f);
-
                     default -> System.out.println("[SERVER] Unknown frame: " + f.type);
                 }
             }
@@ -116,6 +121,98 @@ public class ClientHandler implements Runnable {
             System.err.println("[SERVER] IO error: " + e.getMessage());
         } finally {
             cleanup();
+        }
+    }
+    
+    /* ================= AUTH REGISTER (DB only) ================= */
+    private void handleAuthRegister(Frame f) {
+        try {
+            String body = (f.body == null) ? "" : f.body;
+            String u = jsonGet(body, "username");
+            String p = jsonGet(body, "password");
+            String avatarMime = jsonGet(body, "avatarMime");
+            String avatarB64  = jsonGet(body, "avatarBase64");
+
+            if (u == null || u.isBlank() || p == null || p.isBlank()) {
+                sendFrame(Frame.error("REGISTER_INVALID_INPUT"));
+                return;
+            }
+
+            byte[] avatarBytes = null;
+            if (avatarB64 != null && !avatarB64.isBlank()) {
+                try {
+                    avatarBytes = Base64.getDecoder().decode(avatarB64);
+                } catch (IllegalArgumentException ex) {
+                    System.err.println("[AUTH_REGISTER] avatar base64 decode failed: " + ex.getMessage());
+                }
+            }
+
+            boolean ok = userDao.register(u, p, avatarBytes, avatarMime);
+            if (!ok) {
+                sendFrame(Frame.error("REGISTER_USERNAME_EXISTS"));
+            } else {
+                // Trả về status đơn giản cho client
+                sendFrame(Frame.ack("{\"status\":\"OK\"}"));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("REGISTER_DB_ERROR"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("REGISTER_FAIL"));
+        }
+    }
+
+    /* ================= AUTH LOGIN (DB only) ================= */
+    private void handleAuthLogin(Frame f) {
+        try {
+            String body = (f.body == null) ? "" : f.body;
+            String u = jsonGet(body, "username");
+            String p = jsonGet(body, "password");
+
+            if (u == null || u.isBlank() || p == null || p.isBlank()) {
+                sendFrame(Frame.error("LOGIN_INVALID_INPUT"));
+                return;
+            }
+
+            boolean ok = userDao.login(u, p);
+            if (!ok) {
+                sendFrame(Frame.error("LOGIN_FAIL"));
+                return;
+            }
+
+            // Lấy thông tin user từ DB
+            User user = UserDAO.findByUsername(u);
+            if (user == null) {
+                sendFrame(Frame.error("LOGIN_USER_NOT_FOUND"));
+                return;
+            }
+
+            // Lưu lại userId để cleanup set offline
+            this.userId = user.getId();
+
+            // Đánh dấu online trong DB (thay vì client gọi)
+            try {
+                UserDAO.setOnline(user.getId(), true);
+            } catch (Exception ex) {
+                System.err.println("[AUTH_LOGIN] setOnline failed: " + ex.getMessage());
+            }
+
+            // Trả JSON đơn giản cho client (chỉ cần username, id nếu sau này bạn muốn dùng thêm)
+            String json = "{"
+                    + "\"status\":\"OK\","
+                    + "\"id\":" + user.getId() + ","          // 👈 THÊM DÒNG NÀY
+                    + "\"username\":\"" + escJson(user.getUsername()) + "\""
+                    + "}";
+
+            sendFrame(Frame.ack(json));
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("LOGIN_DB_ERROR"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("LOGIN_FAIL"));
         }
     }
 
@@ -1276,6 +1373,15 @@ public class ClientHandler implements Runnable {
 
     private void cleanup() {
         if (username != null) {
+            // set offline ở DB
+            if (userId > 0) {
+                try {
+                    UserDAO.setOnline(userId, false);
+                } catch (Exception e) {
+                    System.err.println("[CLEANUP] setOnline(false) failed: " + e.getMessage());
+                }
+            }
+
             CallRouter.getInstance().unregister(username, this);
             online.remove(username, this);
             broadcast("🔴 " + username + " left", true);

@@ -5,6 +5,8 @@ import client.signaling.CallSignalingService;
 import common.Frame;
 import common.FrameIO;
 import common.MessageType;
+import common.User;
+import java.util.Base64;
 import javafx.scene.layout.HBox;
 
 import java.io.*;
@@ -43,9 +45,12 @@ public class ClientConnection {
             binOut = new DataOutputStream(new BufferedOutputStream(rawOut));
             return true;
         } catch (IOException e) {
+            e.printStackTrace(); // THÊM DÒNG NÀY
+            System.err.println("[CLIENT] connect() failed to " + host + ":" + port + " - " + e.getMessage());
             return false;
         }
     }
+
     
     public void markDownloadDone(String fid) {
         if (fid == null) return;
@@ -142,6 +147,90 @@ public class ClientConnection {
 
         readerThread.setDaemon(true);
         readerThread.start();
+    }
+    
+    // ========== AUTH REGISTER/LOGIN (đi qua server) ==========
+
+    /**
+     * Gửi request đăng ký tài khoản lên server.
+     * @return true nếu đăng ký OK, false nếu tên trùng / lỗi.
+     */
+    public boolean authRegister(String username, String password, byte[] avatarBytes, String avatarMime) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"username\":\"").append(esc(username)).append("\",")
+          .append("\"password\":\"").append(esc(password)).append("\"");
+
+        if (avatarBytes != null && avatarBytes.length > 0 &&
+                avatarMime != null && !avatarMime.isBlank()) {
+            String b64 = Base64.getEncoder().encodeToString(avatarBytes);
+            sb.append(",\"avatarMime\":\"").append(esc(avatarMime)).append("\",")
+              .append("\"avatarBase64\":\"").append(b64).append("\"");
+        }
+        sb.append("}");
+
+        Frame req = new Frame(MessageType.AUTH_REGISTER, username, "", sb.toString());
+        sendFrame(req);
+        binOut.flush();
+
+        Frame resp = FrameIO.read(binIn);
+        if (resp == null) throw new IOException("Server closed connection during register");
+
+        if (resp.type == MessageType.ACK) {
+            String status = jsonGet(resp.body, "status");
+            // nếu server gửi {"status":"OK"} hoặc body rỗng thì coi như OK
+            return status == null || "OK".equals(status);
+        }
+        if (resp.type == MessageType.ERROR) {
+            System.err.println("[AUTH_REGISTER] ERROR: " + resp.body);
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * Gửi request đăng nhập lên server, nhận lại User (ít nhất có username).
+     * @return User nếu đăng nhập OK, null nếu sai tài khoản/mật khẩu.
+     */
+    public User authLogin(String username, String password) throws IOException {
+        String body = "{\"username\":\"" + esc(username) + "\",\"password\":\"" + esc(password) + "\"}";
+        Frame req = new Frame(MessageType.AUTH_LOGIN, username, "", body);
+        sendFrame(req);
+        binOut.flush();
+
+        Frame resp = FrameIO.read(binIn);
+        if (resp == null) throw new IOException("Server closed connection during login");
+
+        if (resp.type == MessageType.ERROR) {
+            System.err.println("[AUTH_LOGIN] ERROR: " + resp.body);
+            return null;
+        }
+        if (resp.type != MessageType.ACK) {
+            System.err.println("[AUTH_LOGIN] Unexpected frame type: " + resp.type);
+            return null;
+        }
+
+        String status = jsonGet(resp.body, "status");
+        if (!"OK".equals(status)) {
+            System.err.println("[AUTH_LOGIN] status != OK: " + resp.body);
+            return null;
+        }
+
+        String uname = jsonGet(resp.body, "username");
+        String finalName = (uname != null && !uname.isBlank()) ? uname : username;
+
+        // 👇 LẤY ID TỪ JSON
+        String idStr = jsonGet(resp.body, "id");
+        int id = 0;
+        if (idStr != null && !idStr.isBlank()) {
+            try {
+                id = (int) Long.parseLong(idStr);
+            } catch (NumberFormatException ignore) {}
+        }
+
+        User u = new User();
+        u.setId(id);               // 👈 QUAN TRỌNG: set id vào User
+        u.setUsername(finalName);
+        return u;
     }
 
     public void loginFrame(String username) throws IOException {

@@ -21,11 +21,9 @@ import javafx.scene.shape.Circle;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
-import server.dao.UserDAO;
 
 import java.io.File;
 import java.nio.file.Files;
-import java.sql.SQLException;
 import java.util.Optional;
 
 public class MainController {
@@ -33,12 +31,13 @@ public class MainController {
     @FXML private Button loginBtn;
     @FXML private Button registerBtn;
 
-    private final UserDAO userDAO = new UserDAO();
-
     @FXML private void onLogin()    { showAuthDialog(AuthMode.LOGIN); }
     @FXML private void onRegister() { showAuthDialog(AuthMode.REGISTER); }
 
     private enum AuthMode { LOGIN, REGISTER }
+    
+    private static final String SERVER_HOST = "192.168.1.143"; // sau này đổi thành IP server
+    private static final int    SERVER_PORT = 5000;
 
     private void showAuthDialog(AuthMode mode) {
         Dialog<Boolean> dialog = new Dialog<>();
@@ -228,30 +227,43 @@ public class MainController {
         if (result.orElse(false)) {
             String u = username.getText().trim();
             String p = password.getText();
+
             try {
-                boolean ok;
+                ClientConnection conn = new ClientConnection();
+                boolean connected = conn.connect(SERVER_HOST, SERVER_PORT);
+                if (!connected) {
+                    showAlert(Alert.AlertType.ERROR, "Không kết nối được server.");
+                    return;
+                }
+
                 if (mode == AuthMode.REGISTER) {
-                    ok = userDAO.register(u, p, selectedAvatarBytes[0], selectedAvatarMime[0]);
+                    boolean ok = conn.authRegister(u, p, selectedAvatarBytes[0], selectedAvatarMime[0]);
+                    conn.close(); // đăng ký xong cho login lại
                     if (!ok) {
-                        showAlert(Alert.AlertType.WARNING, "Tên đăng nhập đã tồn tại.");
+                        showAlert(Alert.AlertType.WARNING, "Tên đăng nhập đã tồn tại hoặc đăng ký thất bại.");
                         return;
                     }
                     showAlert(Alert.AlertType.INFORMATION, "Đăng ký thành công, vui lòng đăng nhập.");
                 } else {
-                    ok = userDAO.login(u, p);
-                    if (!ok) {
+                    User loggedIn = conn.authLogin(u, p);
+                    if (loggedIn == null) {
                         showAlert(Alert.AlertType.ERROR, "Sai tài khoản hoặc mật khẩu.");
+                        conn.close();
                         return;
                     }
-                    User loggedIn = UserDAO.findByUsername(username.getText());
-                    UserDAO.setOnline(loggedIn.getId(), true);
-                    goToHome(loggedIn);
+
+                    // Sau khi auth OK -> đăng ký presence (REGISTER) để server bind username + gửi offline msg
+                    conn.register(loggedIn.getUsername());
+
+                    // Mở màn hình Home, dùng chính connection này
+                    goToHome(loggedIn, conn);
                 }
-            } catch (SQLException e) {
+            } catch (Exception e) {
                 e.printStackTrace();
-                showAlert(Alert.AlertType.ERROR, "Lỗi CSDL: " + e.getMessage());
+                showAlert(Alert.AlertType.ERROR, "Lỗi kết nối: " + e.getMessage());
             }
         }
+
     }
 
     private static boolean isStrongPassword(String p) {
@@ -286,15 +298,8 @@ public class MainController {
         new Alert(type, msg).showAndWait();
     }
 
-    private void goToHome(User loggedInUser) {
+    private void goToHome(User loggedInUser, ClientConnection conn) {
         try {
-            ClientConnection conn = new ClientConnection();
-            boolean ok = conn.connect("127.0.0.1", 5000);
-            if (!ok) {
-                new Alert(Alert.AlertType.ERROR, "Không kết nối được server.").showAndWait();
-                return;
-            }
-            conn.register(loggedInUser.getUsername());
             CallSignalingService callSvc = new CallSignalingService(conn);
             Stage stage = (Stage) loginBtn.getScene().getWindow();
             FXMLLoader loader = new FXMLLoader(getClass().getResource("/client/view/Home.fxml"));
@@ -309,7 +314,6 @@ public class MainController {
             stage.setScene(scene);
             stage.centerOnScreen();
             stage.setOnCloseRequest(ev -> {
-                try { UserDAO.setOnline(loggedInUser.getId(), false); } catch (Exception ignore) {}
                 try { conn.close(); } catch (Exception ignore) {}
             });
         } catch (Exception e) {

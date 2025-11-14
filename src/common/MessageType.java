@@ -35,7 +35,7 @@ public enum MessageType {
     AUDIO_HISTORY((byte)38),
 	DOWNLOAD_AUDIO((byte)39),
 	SMART_REPLY((byte)40),
-	CREATE_GROUP((byte)41),
+	CREATE_GROUP((byte)41),	
 	ADD_MEMBER((byte)42),
 	REMOVE_MEMBER((byte)43),
 	DELETE_GROUP((byte)44),
@@ -43,7 +43,10 @@ public enum MessageType {
 	GROUP_MSG((byte)46),
 	GROUP_HISTORY((byte)47),
 	GROUP_SYSTEM((byte)48),
-	GROUP_LIST((byte)49);
+	GROUP_LIST((byte)49),
+	AUTH_REGISTER((byte)50),
+    AUTH_LOGIN   ((byte)51);
+	
     public final byte id;
     MessageType(byte id){ this.id = id; }
 

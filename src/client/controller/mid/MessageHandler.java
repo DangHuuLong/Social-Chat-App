@@ -52,25 +52,6 @@ public class MessageHandler {
         return null;
     }
 
-    /**
-     * Xác định convKey cho 1 file event dựa trên JSON.
-     * Giả định server gửi:
-     *   scope = "dm" | "group"
-     *   groupId = "11" (nếu là group)
-     * Nếu server dùng field khác (vd: roomId), chỉ cần chỉnh lại ở đây.
-     */
-    private String resolveConversationKeyForFileEvt(String json, String from) {
-        String scope = UtilHandler.jsonGet(json, "scope");    // optional
-        String groupId = UtilHandler.jsonGet(json, "groupId");// optional
-
-        if ("group".equalsIgnoreCase(scope) && groupId != null && !groupId.isBlank()) {
-            return "group:" + groupId.trim();
-        }
-
-        // fallback: nếu không có scope/groupId thì coi như DM từ 'from'
-        return from;
-    }
-
     // ===================== MAIN DISPATCH =====================
 
     public void handleServerFrame(Frame f) {
@@ -94,6 +75,7 @@ public class MessageHandler {
         }
 
     }
+
 
     // ===================== PRIVATE HANDLERS =====================
     private static String[] parseReplyPrefix(String body) {
@@ -1181,4 +1163,5 @@ public class MessageHandler {
             }
         });
     }
+    
 }
