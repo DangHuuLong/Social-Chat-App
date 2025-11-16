@@ -512,24 +512,61 @@ public class UIMessageHandler {
         try { Long.parseLong(s); return true; } catch (Exception ignore){ return false; }
     }
 
-    private HBox addRowWithBubble(Node bubble, boolean incoming, String messageId) {
+    private HBox addRowWithBubble(Node bubble, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
         if (controller.getMessageContainer().getChildren().size() > 100) {
             controller.getMessageContainer().getChildren().remove(0);
         }
 
-        HBox row = new HBox(6);
-        row.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
+        // 1. VBox Mẹ (Wrapper) - Căn trái/phải toàn bộ tin nhắn
+        VBox messageVBoxWrapper = new VBox();
+        messageVBoxWrapper.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
+        messageVBoxWrapper.getStyleClass().add("message-vbox-wrapper");
 
+        // 2. HBox Nội dung (Avatar - Message Content)
+        HBox contentHBox = new HBox(6); // Khoảng cách giữa Avatar và nội dung
+        contentHBox.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
+        contentHBox.getStyleClass().add("message-content-hbox");
+
+        // 3. VBox Message Content (Header + Bubble cũ)
+        VBox contentVBox = new VBox(2); // Khoảng cách giữa Header và Bubble
+        contentVBox.getStyleClass().add("message-content-vbox");
+
+        // 4. Header (Tên, Time, Edited)
+        HBox header = buildMessageHeader(sender, createdAt, updatedAt, incoming);
+
+        // 5. Gắn Header và Bubble cũ vào VBox Content
+        contentVBox.getChildren().addAll(header, bubble);
+
+        // 6. Avatar
+        ImageView avatarView = getAvatarView(sender);
+        
+        // 7. Sắp xếp Avatar và Content
+        if (incoming) {
+            contentHBox.getChildren().addAll(avatarView, contentVBox);
+        } else {
+            contentHBox.getChildren().addAll(contentVBox, avatarView);
+        }
+        
+        // Thêm ContentHBox vào VBox Mẹ
+        messageVBoxWrapper.getChildren().add(contentHBox);
+
+        // Bổ sung Spacer (để đẩy toàn bộ VBox Mẹ sang trái/phải)
+        HBox row = new HBox();
+        row.getStyleClass().add("message-row-container"); // Vẫn dùng HBox cho container chính
+        row.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT); // Căn trái/phải
+        
         Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox.setHgrow(spacer, javafx.scene.layout.Priority.ALWAYS);
 
-        if (incoming) row.getChildren().addAll(bubble, spacer);
-        else          row.getChildren().addAll(spacer, bubble);
+        if (incoming) row.getChildren().addAll(messageVBoxWrapper, spacer);
+        else          row.getChildren().addAll(spacer, messageVBoxWrapper);
 
+        // Gắn Side Menu
         attachSideMenu(row, spacer, incoming, messageId);
 
         controller.getMessageContainer().getChildren().add(row);
         scrollToBottom();
+        // Logic reply link (giữ nguyên)
         Object ud = row.getUserData();
         if (ud != null) {
             String id = String.valueOf(ud);
@@ -537,14 +574,61 @@ public class UIMessageHandler {
             if (waiters != null) {
                 for (HBox waiter : waiters) {
                     boolean incomingWaiter = (waiter.getAlignment() == Pos.CENTER_LEFT);
-                    attachReplyChipById(waiter, incomingWaiter, id); // bây giờ id đã có srcRow
+                    attachReplyChipById(waiter, incomingWaiter, id);
                 }
             }
         }
         return row;
     }
+    
+    private HBox buildMessageHeader(String sender, long createdAt, long updatedAt, boolean incoming) {
+        // 1. Dữ liệu
+        String senderDisplay = incoming ? sender : "Bạn";
+        String timeDisplay = UtilHandler.formatTime(createdAt); // Cần một helper format time (Giả định có: HH:mm)
+        boolean isEdited = updatedAt > 0;
+        String editedDisplay = isEdited ? " · Đã chỉnh sửa" : "";
 
-    public HBox addTextMessage(String text, boolean incoming, String messageId) {
+        // 2. Tạo UI
+        HBox header = new HBox(8); // Khoảng cách giữa các label
+        header.getStyleClass().add("message-header");
+        header.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
+
+        Label senderLbl = new Label(senderDisplay);
+        senderLbl.getStyleClass().add("header-sender");
+
+        Label timeLbl = new Label(timeDisplay);
+        timeLbl.getStyleClass().add("header-time");
+
+        Label editedLbl = new Label(editedDisplay);
+        editedLbl.getStyleClass().add("header-edited");
+        editedLbl.managedProperty().bind(editedLbl.visibleProperty());
+        editedLbl.setVisible(isEdited);
+
+        // 3. Sắp xếp (Outgoing cần ngược lại: Edited -> Time -> Sender)
+        if (incoming) {
+            header.getChildren().addAll(senderLbl, timeLbl, editedLbl);
+        } else {
+            // Cần căn phải: thêm Region spacer giữa
+            Region spacer = new Region();
+            // Không dùng Region spacer. Dùng HBox alignment và thêm label theo thứ tự.
+            // Để căn phải, chúng ta dùng HBox với alignment RIGHT. Nếu có nhiều label, nó sẽ xếp từ phải qua.
+            // Tuy nhiên, để đạt được hiệu ứng 'Label 1 | Label 2 | Label 3' căn phải, cần dùng Alignment
+            header.getChildren().addAll(editedLbl, timeLbl, senderLbl);
+        }
+        return header;
+    }
+
+    // Helper để lấy Avatar (sẽ cần MidController hỗ trợ cache)
+    private ImageView getAvatarView(String sender) {
+        Image avatar = controller.loadAvatarImageForUser(sender); // GIẢ ĐỊNH: MidController có hàm này
+        ImageView iv = new ImageView(avatar);
+        iv.setFitWidth(24);
+        iv.setFitHeight(24);
+        iv.getStyleClass().add("message-avatar");
+        return iv;
+    }
+
+    public HBox addTextMessage(String text, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
         VBox bubble = new VBox();
         bubble.setMaxWidth(420);
         bubble.setId(incoming ? "incoming-text" : "outgoing-text");
@@ -552,18 +636,23 @@ public class UIMessageHandler {
         Label lbl = new Label(text);
         lbl.setWrapText(true);
         bubble.getChildren().add(lbl);
-
-        HBox row = addRowWithBubble(bubble, incoming, messageId);
+        
+        // CHÚ Ý: truyền đủ 6 tham số
+        HBox row = addRowWithBubble(bubble, incoming, messageId, sender, createdAt, updatedAt);
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
-            if (chip != null && bubble instanceof VBox vb) vb.getChildren().add(0, chip);
+            if (chip != null) { 
+                // Cần tìm VBox Bubble cũ để chèn chip, không phải VBox Message Content
+                VBox bubbleBox = findBubbleBox(row);
+                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
+            }
             controller.clearReplyPreview();
         }
         return row;
     }
 
-    /* IMAGE: chỉ ImageView, không label */
-    public HBox addImageMessage(Image img, String caption, boolean incoming, String messageId) {
+    // Tương tự cho addImageMessage:
+    public HBox addImageMessage(Image img, String caption, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
         VBox box = new VBox(4);
         box.setId(incoming ? "incoming-image" : "outgoing-image");
 
@@ -572,17 +661,21 @@ public class UIMessageHandler {
         iv.setPreserveRatio(true);
 
         box.getChildren().add(iv);
-        HBox row = addRowWithBubble(box, incoming, messageId);
+        // CHÚ Ý: truyền đủ 6 tham số
+        HBox row = addRowWithBubble(box, incoming, messageId, sender, createdAt, updatedAt);
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
-            if (chip != null) box.getChildren().add(0, chip);
+            if (chip != null) {
+                VBox bubbleBox = findBubbleBox(row);
+                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
+            }
             controller.clearReplyPreview();
         }
         return row;
     }
-
+    
     /* FILE: chỉ tên + kích thước (lọc MIME) */
-    public HBox addFileMessage(String filename, String meta, boolean incoming, String messageId) {
+    public HBox addFileMessage(String filename, String meta, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
         // Tạo bubble
         VBox box = new VBox();
         box.setId(incoming ? "incoming-file" : "outgoing-file");
@@ -624,7 +717,7 @@ public class UIMessageHandler {
         box.getChildren().add(content);
 
         // Thêm bubble vào hàng và gắn side menu
-        HBox row = addRowWithBubble(box, incoming, messageId);
+        HBox row = addRowWithBubble(box, incoming, messageId, sender, createdAt, updatedAt);
 
         // Gắn userData/fid để còn resolve về sau
         if (messageId != null) {
@@ -653,11 +746,7 @@ public class UIMessageHandler {
         return row;
     }
 
-    public HBox addTextMessage(String text, boolean incoming) { return addTextMessage(text, incoming, (String) null); }
-    public HBox addImageMessage(Image img, String caption, boolean incoming) { return addImageMessage(img, caption, incoming, (String) null); }
-    public HBox addFileMessage(String filename, String meta, boolean incoming) { return addFileMessage(filename, meta, incoming, (String) null); }
-
-    public HBox addVoiceMessage(String duration, boolean incoming, String fileId) {
+    public HBox addVoiceMessage(String duration, boolean incoming, String fileId, String sender, long createdAt, long updatedAt) {
         if (controller.getMessageContainer().getChildren().size() > 100) {
             controller.getMessageContainer().getChildren().remove(0);
         }
@@ -713,7 +802,7 @@ public class UIMessageHandler {
     }
 
     /* VIDEO: chỉ khu vực phát + nút Play + Slider, KHÔNG label */
-    public HBox addVideoMessage(String filename, String meta, boolean incoming, String fileId) {
+    public HBox addVideoMessage(String filename, String meta, boolean incoming, String fileId, String sender, long createdAt, long updatedAt) {
         if (controller.getMessageContainer().getChildren().size() > 100) {
             controller.getMessageContainer().getChildren().remove(0);
         }
@@ -804,7 +893,7 @@ public class UIMessageHandler {
         return null;
     }
 
-    public HBox addCallLogMessage(String iconText, String title, String subtitle, boolean incoming) {
+    public HBox addCallLogMessage(String iconText, String title, String subtitle, boolean incoming, String sender, long createdAt, long updatedAt) {
         VBox box = new VBox(8);
         box.setId(incoming ? "incoming-call" : "outgoing-call");
         box.setMaxWidth(420);
@@ -835,7 +924,7 @@ public class UIMessageHandler {
 
         box.getChildren().addAll(rowTop, sep, redial);
 
-        return addRowWithBubble(box, incoming, (String) null);
+        return addRowWithBubble(box, incoming, (String) null, sender, createdAt, updatedAt);
     }
     private VBox buildReplyChipForCurrentContext(HBox newMsgRow, boolean newMsgIncoming) {
         // lấy nguồn đang được reply

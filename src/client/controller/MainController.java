@@ -36,7 +36,7 @@ public class MainController {
 
     private enum AuthMode { LOGIN, REGISTER }
     
-    private static final String SERVER_HOST = "192.168.1.155"; // sau này đổi thành IP server
+    private static final String SERVER_HOST = "192.168.1.161"; // sau này đổi thành IP server
     private static final int    SERVER_PORT = 5000;
 
     private void showAuthDialog(AuthMode mode) {

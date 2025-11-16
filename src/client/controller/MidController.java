@@ -120,7 +120,11 @@ public class MidController implements CallSignalListener {
 	public MediaHandler getMediaHandler() {
 		return mediaHandler;
 	}
-
+	private final Map<String, Image> avatarCache = new ConcurrentHashMap<>();
+	private LeftController leftController;
+	public void setLeftController(LeftController lc) {
+        this.leftController = lc;
+    }
     public void bind(Label currentChatName, Label currentChatStatus, VBox messageContainer, TextField messageField, ImageView midHeaderAvatar) {
         this.currentChatName = currentChatName;
         this.currentChatStatus = currentChatStatus;
@@ -391,7 +395,49 @@ public class MidController implements CallSignalListener {
             }
         }
     }
+    public Image loadAvatarImageForUser(String username) {
+        if (username == null || username.isBlank()) {
+            return loadDefaultAvatar();
+        }
+        
+        // 1. Kiểm tra cache
+        if (avatarCache.containsKey(username)) {
+            return avatarCache.get(username);
+        }
+        
+        // 2. Tải/tìm User 
+        User u = findUserByUsername(username); 
 
+        Image img = loadAvatarImage(u); // Dùng hàm load avatar cũ (dựa trên User object)
+        
+        // 3. Cache và trả về
+        avatarCache.put(username, img);
+        return img;
+    }
+    private User findUserByUsername(String username) {
+        if (username == null || username.isBlank()) return null;
+
+        // 1. Kiểm tra currentUser và selectedUser (ưu tiên)
+        if (currentUser != null && currentUser.getUsername().equals(username)) return currentUser;
+        if (selectedUser != null && selectedUser.getUsername().equals(username)) return selectedUser;
+
+        // 2. Tìm kiếm trong cache của LeftController
+        if (leftController != null) {
+            return leftController.getUserByUsername(username); // <-- Cần thêm hàm này vào LeftController
+        }
+
+        // 3. Nếu không tìm thấy, trả về null (và loadDefaultAvatar sẽ được gọi)
+        return null; 
+    }
+
+    // 👇 CHỈNH SỬA: Hàm default
+    private Image loadDefaultAvatar() {
+         return new Image(
+            Objects.requireNonNull(
+                getClass().getResource("/client/view/images/default user.png")
+            ).toExternalForm()
+        );
+    }
     private Image loadAvatarImage(User u) {
         try {
             byte[] bytes = (u != null) ? u.getAvatar() : null;
@@ -495,7 +541,14 @@ public class MidController implements CallSignalListener {
                 connection.sendFrame(frame);
 
                 // Bubble local
-                HBox row = addTextMessage(text, false);
+                HBox row = addTextMessage(
+                        text, 
+                        false, // outgoing
+                        null, // messageId sẽ được tag sau
+                        currentUser.getUsername(), 
+                        System.currentTimeMillis(), 
+                        0L // chưa chỉnh sửa
+                    );
                 // ✅ Đánh dấu pending để khi server trả messageId thì map vào
                 enqueuePendingOutgoing(row);
 
@@ -627,35 +680,32 @@ public class MidController implements CallSignalListener {
 
 
 
-    public HBox addTextMessage(String text, boolean incoming) {
-        HBox row = addTextMessage(text, incoming, null);
+    public HBox addTextMessage(String text, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
+        HBox row = new UIMessageHandler(this).addTextMessage(text, incoming, messageId, sender, createdAt, updatedAt);
         snapshotText(text, incoming);
         return row;
     }
-    public HBox addImageMessage(Image img, String caption, boolean incoming) {
-        return addImageMessage(img, caption, incoming, null);
+    public HBox addImageMessage(Image img, String caption, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
+        return new UIMessageHandler(this).addImageMessage(img, caption, incoming, messageId, sender, createdAt, updatedAt);
     }
-    public HBox addFileMessage(String filename, String meta, boolean incoming) {
-        return addFileMessage(filename, meta, incoming, null);
-    }
-
-    public HBox addVoiceMessage(String duration, boolean incoming, String fileId) {
-        return new UIMessageHandler(this).addVoiceMessage(duration, incoming, fileId);
-    }
-    public HBox addVideoMessage(String filename, String meta, boolean incoming, String fileId) {
-        return new UIMessageHandler(this).addVideoMessage(filename, meta, incoming, fileId);
+    public HBox addFileMessage(String filename, String meta, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
+        return new UIMessageHandler(this).addFileMessage(filename, meta, incoming, messageId, sender, createdAt, updatedAt);
     }
 
-    public HBox addTextMessage(String text, boolean incoming, String messageId) {
-        HBox row = new UIMessageHandler(this).addTextMessage(text, incoming, messageId);
-        snapshotText(text, incoming);
+    // Bổ sung cho Voice/Video (vốn đã có messageId/fileId)
+    public HBox addVoiceMessage(String duration, boolean incoming, String fileId, String sender, long createdAt, long updatedAt) {
+        return new UIMessageHandler(this).addVoiceMessage(duration, incoming, fileId, sender, createdAt, updatedAt);
+    }
+
+    public HBox addVideoMessage(String filename, String meta, boolean incoming, String fileId, String sender, long createdAt, long updatedAt) {
+        return new UIMessageHandler(this).addVideoMessage(filename, meta, incoming, fileId, sender, createdAt, updatedAt);
+    }
+
+    // Bổ sung cho Call Log (vốn là tin nhắn đặc biệt)
+    public HBox addCallLog(String icon, String title, String subtitle, boolean incoming, String sender, long createdAt, long updatedAt) {
+        HBox row = new UIMessageHandler(this).addCallLogMessage(icon, title, subtitle, incoming, sender, createdAt, updatedAt);
+        snapshotText(title + " " + (subtitle == null ? "" : subtitle), incoming);
         return row;
-    }
-    public HBox addImageMessage(Image img, String caption, boolean incoming, String messageId) {
-        return new UIMessageHandler(this).addImageMessage(img, caption, incoming, messageId);
-    }
-    public HBox addFileMessage(String filename, String meta, boolean incoming, String messageId) {
-        return new UIMessageHandler(this).addFileMessage(filename, meta, incoming, messageId);
     }
 
     public void showOutgoingFile(String filename, String mime, long bytes, String fileId, String duration) {
@@ -676,12 +726,6 @@ public class MidController implements CallSignalListener {
 
     private void applyStatusLabel(Label lbl, boolean online, String lastSeenIso) {
         new UIMessageHandler(this).applyStatusLabel(lbl, online, lastSeenIso);
-    }
-    
-    public HBox addCallLog(String icon, String title, String subtitle, boolean incoming) {
-        HBox row = new UIMessageHandler(this).addCallLogMessage(icon, title, subtitle, incoming);
-        snapshotText(title + " " + (subtitle == null ? "" : subtitle), incoming);
-        return row;
     }
     
     public void putVideoPlayer(String key, javafx.scene.media.MediaPlayer p) {

@@ -97,16 +97,24 @@ public class MessageHandler {
         String[] pr = parseReplyPrefix(body);
         String clean = pr[0];
         String replyToId = pr[1];
+        final long createdAt = System.currentTimeMillis();
         if (body.startsWith("[CALLLOG]")) {
             if (openPeer != null && openPeer.equals(sender)) {
                 CallLogData d = parseCallLog(body);
-                renderCallLogOnce(d, true);
+                renderCallLogOnce(d, true, sender, createdAt);
             }
             return;
         }
 
         if (openPeer != null && openPeer.equals(sender)) {
-        	HBox row = controller.addTextMessage(clean, true, f.transferId);
+        	HBox row = controller.addTextMessage(
+                    clean, 
+                    true, // incoming
+                    f.transferId, 
+                    f.sender, 
+                    System.currentTimeMillis(), // Thời gian nhận
+                    0L // giả định tin mới chưa chỉnh sửa
+                );
         	if (replyToId != null) {
         	    row.getProperties().put("replyTo", replyToId);
         	    new UIMessageHandler(controller).attachReplyChipById(row, /*incoming=*/true, replyToId);
@@ -114,89 +122,135 @@ public class MessageHandler {
         }
     }
 
+ // Trong file client.controller.mid.MessageHandler.java
+
+ // Trong file client.controller.mid.MessageHandler.java
+
     private void handleHistoryFrame(Frame f, String openPeer) {
-        String line = f.body == null ? "" : f.body.trim();
+        String jsonBody = f.body == null ? "" : f.body.trim();
 
-        if (line.startsWith("[HIST IN]")) {
-            String payload = line.substring(9).trim();
-            int p = payload.indexOf(": ");
-            if (p > 0) {
-                String sender = payload.substring(0, p);
-                String body = payload.substring(p + 2);
-                if (openPeer != null && openPeer.equals(sender)) {
-                    handleHistoryContent(body, f.transferId, true);
-                }
-            }
-        } else if (line.startsWith("[HIST OUT]")) {
-            String body = line.substring(10).trim();
-            handleHistoryContent(body, f.transferId, false);
-        }
-    }
+        // 🌟 BƯỚC 1: XÁC ĐỊNH NỘI DUNG VÀ THỜI GIAN
+        String sender;
+        String content;
+        long createdAt;
+        long updatedAt;
+        boolean isIncoming;
+        
+        // Thử parse JSON (Định dạng mới: Server gửi JSON có time/sender)
+        String jsonSender = UtilHandler.jsonGet(jsonBody, "sender");
+        String jsonContent = UtilHandler.jsonGet(jsonBody, "content");
+        
+        if (jsonSender != null && jsonContent != null) {
+            // --- ĐỊNH DẠNG JSON MỚI ---
+            sender = jsonSender;
+            content = jsonContent;
+            createdAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "createdAt"), System.currentTimeMillis());
+            updatedAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "updatedAt"), 0L);
+            
+            // Xác định incoming/outgoing dựa trên sender của JSON (vì Frame.recipient là user hiện tại)
+            String myName = (controller.getCurrentUser() != null) ? controller.getCurrentUser().getUsername() : "";
+            isIncoming = !sender.equals(myName);
 
-    private void handleHistoryContent(String body, Object transferId, boolean incoming) {
-    	String[] pr = parseReplyPrefix(body);
-        String clean = pr[0];
-        String replyToId = pr[1];
-        if (body.startsWith("[CALLLOG]")) {
-            CallLogData d = parseCallLog(body);
-            renderCallLogOnce(d, incoming);
-            return;
-        }
-
-        long msgId = 0L;
-        try { msgId = Long.parseLong(String.valueOf(transferId)); } catch (Exception ignore) {}
-        String msgIdStr = (msgId > 0 ? String.valueOf(msgId) : null);
-
-     // >>> DÙNG clean ĐỂ PHÂN LOẠI <<<
-        String head = (clean == null) ? "" : clean;
-
-        if (head.startsWith("[FILE]")) {
-            String name = head.substring(6).trim();
-            String meta = "";
-            HBox row = controller.addFileMessage(name, meta, incoming, msgIdStr);
-            if (replyToId != null && row.getProperties().get("replyTo") == null) {
-                row.getProperties().put("replyTo", replyToId);
-                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
-            }
-            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-            if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
-                String key = String.valueOf(msgId);
-                if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-            }
-
-        } else if (head.startsWith("[AUDIO]")) {
-            String dur = "--:--";
-            HBox row = controller.addVoiceMessage(dur, incoming, msgIdStr);
-            if (replyToId != null && row.getProperties().get("replyTo") == null) {
-                row.getProperties().put("replyTo", replyToId);
-                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
-            }
-            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-            if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
-                String key = String.valueOf(msgId);
-                if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-            }
-        } else if (head.startsWith("[VIDEO]")) {
-            String name = head.substring(7).trim();
-            String meta = "";
-            HBox row = controller.addVideoMessage(name, meta, incoming, msgIdStr);
-            if (replyToId != null && row.getProperties().get("replyTo") == null) {
-                row.getProperties().put("replyTo", replyToId);
-                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
-            }
-            if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
-            if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
-                String key = String.valueOf(msgId);
-                if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
-            }
         } else {
-        	HBox row = controller.addTextMessage(clean, incoming, String.valueOf(transferId));
-            if (replyToId != null && row.getProperties().get("replyTo") == null) {
-                row.getProperties().put("replyTo", replyToId);
-                new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
+            // --- ĐỊNH DẠNG CHUỖI CŨ (FALLBACK) ---
+            String line = jsonBody;
+            createdAt = System.currentTimeMillis(); // Mặc định nếu không có trong chuỗi
+            updatedAt = 0L; // Mặc định
+
+            if (line.startsWith("[HIST IN]")) {
+                String payload = line.substring(9).trim();
+                int p = payload.indexOf(": ");
+                if (p > 0) {
+                    sender = payload.substring(0, p);
+                    content = payload.substring(p + 2);
+                    isIncoming = true;
+                } else { return; }
+            } else if (line.startsWith("[HIST OUT]")) {
+                content = line.substring(10).trim();
+                sender = controller.getCurrentUser().getUsername(); // Tin OUT luôn là mình
+                isIncoming = false;
+            } else {
+                return; // Không phải định dạng lịch sử nào cả
             }
         }
+
+        // 🌟 BƯỚC 2: CHỈ RENDER NẾU ĐANG MỞ ĐÚNG PEER
+        // DM: openPeer phải là sender (incoming) hoặc recipient (outgoing)
+        if (openPeer != null && (openPeer.equals(sender) || openPeer.equals(f.recipient))) { 
+            // ✅ GỌI HÀM XỬ LÝ NỘI DUNG CHUNG VỚI ĐỦ 6 THAM SỐ
+            handleHistoryContent(content, f.transferId, isIncoming, sender, createdAt, updatedAt);
+        }
     }
+
+	 private void handleHistoryContent(String body, Object transferId, boolean incoming, String sender, long createdAt, long updatedAt) {
+	     String[] pr = parseReplyPrefix(body);
+	     String clean = pr[0];
+	     String replyToId = pr[1];
+	     
+	     if (body.startsWith("[CALLLOG]")) {
+	         CallLogData d = parseCallLog(body);
+	         // ✅ CẬP NHẬT: CallLog cần sender và createdAt
+	         renderCallLogOnce(d, incoming, sender, createdAt);
+	         return;
+	     }
+	
+	     long msgId = 0L;
+	     try { msgId = Long.parseLong(String.valueOf(transferId)); } catch (Exception ignore) {}
+	     String msgIdStr = (msgId > 0 ? String.valueOf(msgId) : null);
+	     
+	     String head = (clean == null) ? "" : clean;
+	
+	     if (head.startsWith("[FILE]")) {
+	         String name = head.substring(6).trim();
+	         String meta = "";
+	         // ✅ CẬP NHẬT: Thêm sender, createdAt, updatedAt
+	         HBox row = controller.addFileMessage(name, meta, incoming, msgIdStr, sender, createdAt, updatedAt);
+	         if (replyToId != null && row.getProperties().get("replyTo") == null) {
+	             row.getProperties().put("replyTo", replyToId);
+	             new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
+	         }
+	         if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+	         if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
+	             String key = String.valueOf(msgId);
+	             if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
+	         }
+	
+	     } else if (head.startsWith("[AUDIO]")) {
+	         String dur = "--:--";
+	         // ✅ CẬP NHẬT: Thêm sender, createdAt, updatedAt
+	         HBox row = controller.addVoiceMessage(dur, incoming, msgIdStr, sender, createdAt, updatedAt);
+	         if (replyToId != null && row.getProperties().get("replyTo") == null) {
+	             row.getProperties().put("replyTo", replyToId);
+	             new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
+	         }
+	         if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+	         if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
+	             String key = String.valueOf(msgId);
+	             if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
+	         }
+	     } else if (head.startsWith("[VIDEO]")) {
+	         String name = head.substring(7).trim();
+	         String meta = "";
+	         // ✅ CẬP NHẬT: Thêm sender, createdAt, updatedAt
+	         HBox row = controller.addVideoMessage(name, meta, incoming, msgIdStr, sender, createdAt, updatedAt);
+	         if (replyToId != null && row.getProperties().get("replyTo") == null) {
+	             row.getProperties().put("replyTo", replyToId);
+	             new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
+	         }
+	         if (msgIdStr != null) controller.getPendingHistoryFileRows().put(msgIdStr, row);
+	         if (controller.getConnection()!=null && controller.getConnection().isAlive() && msgId>0) {
+	             String key = String.valueOf(msgId);
+	             if (markDownloadRequested(key)) try { controller.getConnection().downloadFileByMsgId(msgId); } catch (IOException ignore) {}
+	         }
+	     } else {
+	         // Tin nhắn text thường
+	     	HBox row = controller.addTextMessage(clean, incoming, String.valueOf(transferId), sender, createdAt, updatedAt);
+	         if (replyToId != null && row.getProperties().get("replyTo") == null) {
+	             row.getProperties().put("replyTo", replyToId);
+	             new UIMessageHandler(controller).attachReplyChipById(row, incoming, replyToId);
+	         }
+	     }
+	 }
 
     private void handleFileEvtFrame(Frame f, String currentConvKey) {
         String json = (f.body == null) ? "" : f.body;
@@ -210,7 +264,9 @@ public class MessageHandler {
         String uuid   = UtilHandler.jsonGet(json, "uuid");
         String legacy = UtilHandler.jsonGet(json, "id");
         String dbIdStr = UtilHandler.jsonGet(json, "fileId");
-
+        final String sender = (from != null) ? from : "";
+        final long createdAt = System.currentTimeMillis();
+        final long updatedAt = 0L;
         Long dbId = null;
         if (dbIdStr != null && !dbIdStr.isBlank()) {
             try { dbId = Long.parseLong(dbIdStr); } catch (Exception ignore) {}
@@ -284,20 +340,20 @@ public class MessageHandler {
                     row = controller.addImageMessage(
                             img,
                             name + (sizeOnly.isBlank() ? "" : " • " + sizeOnly),
-                            incoming
+                            incoming, null, sender, createdAt, updatedAt
                     );
                 }
                 case AUDIO -> {
                     String dur = (duration > 0)
                             ? UtilHandler.formatDuration(duration)
                             : "--:--";
-                    row = controller.addVoiceMessage(dur, incoming, null);
+                    row = controller.addVoiceMessage(dur, incoming, null, sender, createdAt, updatedAt);
                 }
                 case VIDEO -> {
-                    row = controller.addVideoMessage(name, sizeOnly, incoming, null);
+                    row = controller.addVideoMessage(name, sizeOnly, incoming, null, sender, createdAt, updatedAt);
                 }
                 default -> {
-                    row = controller.addFileMessage(name, sizeOnly, incoming, null);
+                    row = controller.addFileMessage(name, sizeOnly, incoming, null, sender, createdAt, updatedAt);
                 }
             }
 
@@ -798,6 +854,9 @@ public class MessageHandler {
         String text = controller.getMessageField().getText().trim();
         if (text.isEmpty() || controller.getSelectedUser() == null) return;
      // Lấy replyTo từ UI (nếu đang ở trạng thái "reply")
+        final String sender = (controller.getCurrentUser() != null ? controller.getCurrentUser().getUsername() : "");
+        final long createdAt = System.currentTimeMillis();
+        final long updatedAt = 0L;
         Long replyTo = null;
         if (controller.hasReplyContext()) {
             HBox replyingRow = controller.getReplyingRow();
@@ -839,7 +898,14 @@ public class MessageHandler {
             }
         }
      // Render bubble local ngay để UI mượt
-        HBox row = controller.addTextMessage(text, false);
+        HBox row = controller.addTextMessage(
+                text, 
+                false, // outgoing
+                null,  // messageId (sẽ được tag sau khi ACK)
+                sender,
+                createdAt,
+                updatedAt
+            );
      // Gắn metadata replyTo để UIMessageHandler hiển thị reply chip (đã implement ở phần UI)
         if (replyTo != null && replyTo > 0) {
             row.getProperties().put("replyTo", String.valueOf(replyTo));
@@ -896,7 +962,7 @@ public class MessageHandler {
         return true;
     }
 
-    private void renderCallLogOnce(CallLogData d, boolean defaultIncoming) {
+    private void renderCallLogOnce(CallLogData d, boolean defaultIncoming, String sender, long createdAt) {
         if (d == null) return;
         if (d.callId != null && !d.callId.isBlank()) {
             if (!controller.markCallLogShownOnce(d.callId)) return;
@@ -904,7 +970,9 @@ public class MessageHandler {
         boolean incoming = (d.caller != null || d.callee != null)
                 ? isIncomingForThisClient(d)
                 : defaultIncoming;
-        controller.addCallLog(d.icon, d.title, d.subtitle, incoming);
+        
+        // ✅ SỬA: Thêm sender, createdAt, updatedAt
+        controller.addCallLog(d.icon, d.title, d.subtitle, incoming, sender, createdAt, 0L);
     }
 
  // === SMART REPLY ===
@@ -1006,11 +1074,11 @@ public class MessageHandler {
             String clean = pr[0];
             String replyToId = pr[1];
             String head = (clean == null) ? "" : clean;
-
+            final long createdAt = System.currentTimeMillis();
             // CALLLOG trong group (nếu có)
             if (head.startsWith("[CALLLOG]")) {
                 CallLogData d = parseCallLog(head);
-                renderCallLogOnce(d, incoming);
+                renderCallLogOnce(d, incoming, sender, createdAt);
                 return;
             }
 
@@ -1023,7 +1091,10 @@ public class MessageHandler {
             HBox row = controller.addTextMessage(
                     incoming ? (senderPrefix + clean) : clean,
                     incoming,
-                    msgIdStr
+                    msgIdStr,
+                    sender,
+                    System.currentTimeMillis(), // Thời gian nhận (realtime)
+                    0L // chưa chỉnh sửa
             );
 
             // Gắn messageId để EDIT_MSG / DELETE_MSG dùng được
@@ -1045,122 +1116,35 @@ public class MessageHandler {
 
     private void handleGroupHistoryFrame(Frame f) {
         String groupId = f.recipient;
-        String line = (f.body == null) ? "" : f.body.trim();
+        String jsonBody = (f.body == null) ? "" : f.body.trim();
 
         Platform.runLater(() -> {
             String currentPeer = controller.getCurrentPeer();
             if (currentPeer == null || !currentPeer.equals("group:" + groupId)) return;
-            if (line.isEmpty()) return;
+            if (jsonBody.isEmpty()) return;
 
-            // Giả định server gửi "sender: message"
-            String sender;
-            String body;
-            int p = line.indexOf(':');
-            if (p > 0) {
-                sender = line.substring(0, p).trim();
-                body   = line.substring(p + 1).trim();
-            } else {
-                sender = "";
-                body   = line;
-            }
+            // 🌟 BƯỚC 1: PARSE JSON
+            String sender = UtilHandler.jsonGet(jsonBody, "sender");
+            String content = UtilHandler.jsonGet(jsonBody, "content");
+            long createdAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "createdAt"), System.currentTimeMillis());
+            long updatedAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "updatedAt"), 0L);
+            long msgId = UtilHandler.parseLongSafe(f.transferId, 0L);
 
-            String myName = (controller.getCurrentUser() != null)
-                    ? controller.getCurrentUser().getUsername()
-                    : "";
-            boolean incoming = !sender.equals(myName);
-
-            // Lấy messageId từ transferId (server đã set khi load history)
-            long msgId = 0L;
-            try { msgId = Long.parseLong(String.valueOf(f.transferId)); } catch (Exception ignore) {}
-            String msgIdStr = (msgId > 0) ? String.valueOf(msgId) : null;
-
-            // Tách prefix reply nếu có [REPLY:<id>]
-            String[] pr = parseReplyPrefix(body);
-            String clean = pr[0];
-            String replyToId = pr[1];
-            String head = (clean == null) ? "" : clean;
-
-            // CALLLOG trong group (nếu có)
-            if (head.startsWith("[CALLLOG]")) {
-                CallLogData d = parseCallLog(head);
-                renderCallLogOnce(d, incoming);
+            if (content == null || sender == null) {
+                System.err.println("[GHIST] Failed to parse JSON: " + jsonBody);
                 return;
             }
 
-            HBox row = null;
+            String myName = (controller.getCurrentUser() != null) ? controller.getCurrentUser().getUsername() : "";
+            boolean incoming = !sender.equals(myName);
 
-            // Tạm thời: giữ nguyên style "sender: ..." cho tin nhắn incoming trong group
-            String senderPrefix = (incoming && sender != null && !sender.isBlank())
-                    ? sender + ": "
-                    : "";
-
-            if (head.startsWith("[FILE]")) {
-                String name = head.substring(6).trim();
-                row = controller.addFileMessage(name, "", incoming, msgIdStr);
-                if (msgIdStr != null) {
-                    controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                }
-                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                    String key = String.valueOf(msgId);
-                    if (markDownloadRequested(key)) {
-                        try {
-                            controller.getConnection().downloadFileByMsgId(msgId);
-                        } catch (IOException ignore) {}
-                    }
-                }
-
-            } else if (head.startsWith("[AUDIO]")) {
-                String dur = "--:--";
-                row = controller.addVoiceMessage(dur, incoming, msgIdStr);
-
-                if (msgIdStr != null) {
-                    controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                }
-                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                    String key = String.valueOf(msgId);
-                    if (markDownloadRequested(key)) {
-                        try {
-                            controller.getConnection().downloadFileByMsgId(msgId);
-                        } catch (IOException ignore) {}
-                    }
-                }
-
-            } else if (head.startsWith("[VIDEO]")) {
-                String name = head.substring(7).trim();
-                row = controller.addVideoMessage(name, "", incoming, msgIdStr);
-
-                if (msgIdStr != null) {
-                    controller.getPendingHistoryFileRows().put(msgIdStr, row);
-                }
-                if (controller.getConnection() != null && controller.getConnection().isAlive() && msgId > 0) {
-                    String key = String.valueOf(msgId);
-                    if (markDownloadRequested(key)) {
-                        try {
-                            controller.getConnection().downloadFileByMsgId(msgId);
-                        } catch (IOException ignore) {}
-                    }
-                }
-
-            } else {
-                // Tin nhắn text thường
-                String text = incoming ? (senderPrefix + clean) : clean;
-                row = controller.addTextMessage(text, incoming, msgIdStr);
-            }
-
-            // Gắn metadata chung để sau này reply/edit/delete dùng được
-            if (row != null) {
-                if (msgIdStr != null && row.getUserData() == null) {
-                    row.setUserData(msgIdStr);
-                }
-                if (replyToId != null && row.getProperties().get("replyTo") == null) {
-                    row.getProperties().put("replyTo", replyToId);
-                    new UIMessageHandler(controller).attachReplyChipById(
-                            row,
-                            incoming, // incoming -> bubble bên trái
-                            replyToId
-                    );
-                }
-            }
+            String msgIdStr = (msgId > 0) ? String.valueOf(msgId) : null;
+            
+            // 🌟 BƯỚC 2: CHUYỂN TIẾP CONTENT SẠCH (HOẶC CÓ REPLY/FILE PREFIX)
+            // Group History hiện tại chỉ cần truyền content (có thể kèm [REPLY:] hoặc [FILE])
+            
+            // **KHÔNG CẦN** logic phân tích `sender:` hay `[HIST IN]` ở đây nữa.
+            handleHistoryContent(content, msgIdStr, incoming, sender, createdAt, updatedAt);
         });
     }
     

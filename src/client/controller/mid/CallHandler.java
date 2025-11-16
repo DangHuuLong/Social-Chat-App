@@ -199,6 +199,8 @@ public class CallHandler {
         long duration = connected ? Math.max(0, ended - started) : 0L;
 
         String icon, title, subtitle;
+        String self = controller.getCurrentUser() != null ? controller.getCurrentUser().getUsername() : "";
+        String callerName = controller.isCaller() ? self : peer;
         if (connected) {
             icon = "📹";
             title = "Cuộc gọi video";
@@ -211,8 +213,6 @@ public class CallHandler {
         }
 
         if (sendToPeer && conn != null && conn.isAlive()) {
-            String self = controller.getCurrentUser() != null ? controller.getCurrentUser().getUsername() : "";
-            String callerName = controller.isCaller() ? self : peer;
             String calleeName = controller.isCaller() ? peer : self;
 
             String payload = "[CALLLOG]{"
@@ -235,7 +235,15 @@ public class CallHandler {
         }
 
         boolean incoming = !controller.isCaller();
-        controller.addCallLog(icon, title, subtitle, incoming);
+        controller.addCallLog(
+                icon, 
+                title, 
+                subtitle, 
+                incoming, 
+                callerName, // sender (người tạo ra log cuộc gọi, tức là người gọi)
+                ended,      // createdAt: lấy thời điểm log được tạo (cuộc gọi kết thúc)
+                0L          // updatedAt: 0L vì đây là log sự kiện, không chỉnh sửa
+            );
     }
 
     private static String escape(String s) {

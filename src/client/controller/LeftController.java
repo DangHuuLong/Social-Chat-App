@@ -57,7 +57,27 @@ public class LeftController {
     private Image defaultAvatar; // lazy-load
     private List<GroupViewModel> groupCache = new ArrayList<>();
     private final List<User> userCache = new ArrayList<>();   // ❗ cache tất cả user server gửi
+    public User getUserByUsername(String username) {
+        if (username == null || username.isBlank()) return null;
 
+        // Tối ưu: Nếu LeftController duy trì Map<Username, User> sẽ nhanh hơn
+        // Nhưng dựa trên cấu trúc hiện tại (Map<ID, User>), ta dùng stream/loop trên idToUser.values()
+        
+        // Vì list userCache có thể lớn, dùng stream/filter. 
+        // idToUser theo ID nên không nên dùng để tìm theo username.
+        for (User u : userCache) {
+            if (username.equals(u.getUsername())) {
+                return u;
+            }
+        }
+        
+        // Kiểm tra nốt người dùng hiện tại (nếu MidController không check)
+        if (currentUser != null && username.equals(currentUser.getUsername())) {
+            return currentUser;
+        }
+
+        return null;
+    }
     public void setUsersForSidebar(List<User> users) {
         userCache.clear();
         if (users != null) userCache.addAll(users);

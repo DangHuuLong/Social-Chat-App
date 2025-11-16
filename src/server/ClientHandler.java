@@ -520,16 +520,20 @@ public class ClientHandler implements Runnable {
                 String plain = (m.getBody() == null) ? "" : m.getBody();
                 String bodyWithReply = prependReplyTag(plain, m.getReplyTo());
 
-                String txt = incoming
-                        ? "[HIST IN] " + m.getSender() + ": " + bodyWithReply
-                        : "[HIST OUT] " + bodyWithReply;
-
-                Frame hist = new Frame(
-                        MessageType.HISTORY,
-                        m.getSender(),
-                        m.getRecipient(),
-                        txt
-                );
+                String payloadJson = "{"
+                        + "\"content\":\"" + escJson(bodyWithReply) + "\","
+                        + "\"sender\":\"" + escJson(m.getSender()) + "\","
+                        + "\"recipient\":\"" + escJson(m.getRecipient()) + "\"," // recipient cần cho Client xác định peer
+                        + "\"createdAt\":" + m.getCreatedAt().toEpochMilli() + ","
+                        + "\"updatedAt\":" + (m.getUpdatedAt() != null ? m.getUpdatedAt().toEpochMilli() : 0L)
+                        + "}";
+                    
+                    Frame hist = new Frame(
+                            MessageType.HISTORY,
+                            "server", // Sender giả định là server
+                            username, // Recipient là mình
+                            payloadJson // Gửi JSON
+                    );
                 hist.transferId = String.valueOf(m.getId());
                 sendFrame(hist);
             }
@@ -1392,14 +1396,20 @@ public class ClientHandler implements Runnable {
 
             for (GroupMessage m : messages) {
                 String bodyWithReply = prependReplyTag(m.getBody(), m.getReplyTo());
-                String line = m.getSender() + ": " + (bodyWithReply == null ? "" : bodyWithReply);
+                String payloadJson = "{"
+                        + "\"content\":\"" + escJson(bodyWithReply) + "\","
+                        + "\"sender\":\"" + escJson(m.getSender()) + "\","
+                        + "\"recipient\":\"group:" + groupId + "\","
+                        + "\"createdAt\":" + m.getCreatedAt().getTime()+ "," // M.getCreatedAt() là Instant
+                        + "\"updatedAt\":" + (m.getUpdatedAt() != null ? m.getUpdatedAt().getTime() : 0L) // M.getUpdatedAt() là Instant
+                        + "}";
 
-                Frame hist = new Frame(
-                        MessageType.GROUP_HISTORY,
-                        m.getSender(),
-                        String.valueOf(groupId),
-                        line
-                );
+                    Frame hist = new Frame(
+                            MessageType.GROUP_HISTORY,
+                            "server", // Sender giả định là server
+                            username, // Recipient là mình
+                            payloadJson // Gửi JSON
+                    );
                 hist.transferId = String.valueOf(m.getId()); // quan trọng
                 sendFrame(hist);
             }

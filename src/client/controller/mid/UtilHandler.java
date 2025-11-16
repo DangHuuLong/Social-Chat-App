@@ -1,9 +1,22 @@
 package client.controller.mid;
 
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 
 public class UtilHandler {
+	private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm")
+            .withZone(ZoneId.systemDefault());
+	public static String formatTime(long epochMillis) {
+        if (epochMillis <= 0) return "--:--";
+        try {
+            return TIME_FORMATTER.format(Instant.ofEpochMilli(epochMillis));
+        } catch (Exception e) {
+            System.err.println("[UtilHandler] Failed to format time: " + e.getMessage());
+            return "--:--";
+        }
+    }
     public static String humanize(String iso, boolean withDot) {
         if (iso == null || iso.isBlank()) return "";
         try {

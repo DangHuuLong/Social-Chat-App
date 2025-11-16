@@ -20,6 +20,10 @@ public class FileHandler {
         final String safeId   = (fileId == null) ? "" : fileId;
         final String safeName = (filename == null) ? "" : filename;
         final String safeMime = (mime == null || mime.isBlank()) ? "application/octet-stream" : mime;
+        
+        final String sender = (controller.getCurrentUser() != null) ? controller.getCurrentUser().getUsername() : "";
+        final long createdAt = System.currentTimeMillis();
+        final long updatedAt = 0L;
 
         if (!safeId.isBlank()) {
             controller.getFileIdToName().put(safeId, safeName);
@@ -55,25 +59,25 @@ public class FileHandler {
                 String caption = safeName;
                 if (!sizeOnly.isBlank()) caption = safeName + " • " + sizeOnly;
 
-                row = controller.addImageMessage(img, caption, false, safeId.isBlank() ? null : safeId);
+                row = controller.addImageMessage(img, caption, false, safeId.isBlank() ? null : safeId, sender, createdAt, updatedAt);
                 if (!safeId.isBlank()) row.setUserData(safeId);
             }
 
             case AUDIO -> {
                 String dur = (duration != null && !duration.isBlank()) ? duration : "--:--";
-                row = controller.addVoiceMessage(dur, false, safeId.isBlank() ? null : safeId);
+                row = controller.addVoiceMessage(dur, false, safeId.isBlank() ? null : safeId, sender, createdAt, updatedAt);
                 if (!safeId.isBlank()) row.setUserData(safeId);
             }
 
             case VIDEO -> {
                 // Video: tên + size (không MIME)
-                row = controller.addVideoMessage(safeName, metaText, false, safeId.isBlank() ? null : safeId);
+                row = controller.addVideoMessage(safeName, metaText, false, safeId.isBlank() ? null : safeId, sender, createdAt, updatedAt);
                 if (!safeId.isBlank()) row.setUserData(safeId);
             }
 
             default -> {
                 // File thường: tên + size (không MIME)
-                row = controller.addFileMessage(safeName, metaText, false, safeId.isBlank() ? null : safeId);
+                row = controller.addFileMessage(safeName, metaText, false, safeId.isBlank() ? null : safeId, sender, createdAt, updatedAt);
                 if (!safeId.isBlank()) row.setUserData(safeId);
             }
         }
