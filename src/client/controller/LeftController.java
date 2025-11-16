@@ -1,6 +1,8 @@
 package client.controller;
 
 import client.ClientConnection;
+import common.Frame;
+import common.MessageType;
 import common.User;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -21,10 +23,8 @@ import javafx.scene.layout.*;
 import javafx.scene.shape.Circle;
 import javafx.stage.Stage;
 import javafx.util.Duration;
-import server.dao.UserDAO;
 
 import java.io.ByteArrayInputStream;
-import java.sql.SQLException;
 import java.time.Instant;
 import java.util.*;
 import java.util.function.Consumer;
@@ -45,11 +45,10 @@ public class LeftController {
     private final Map<Integer, Label> lastLabels = new HashMap<>();
     private final Map<Integer, User> idToUser = new HashMap<>();
     private final Map<Integer, GroupViewModel> groupMap = new HashMap<>();
-    private Timeline poller;
 
     private final BooleanProperty collapsed = new SimpleBooleanProperty(false);
     private final BooleanProperty dark = new SimpleBooleanProperty(false);
-
+    private Timeline presenceTimer;
     private User currentUser;
     private Consumer<User> onOpenConversation;
 
@@ -57,6 +56,14 @@ public class LeftController {
     private final Map<Integer, Image> avatarCache = new HashMap<>();
     private Image defaultAvatar; // lazy-load
     private List<GroupViewModel> groupCache = new ArrayList<>();
+    private final List<User> userCache = new ArrayList<>();   // ❗ cache tất cả user server gửi
+
+    public void setUsersForSidebar(List<User> users) {
+        userCache.clear();
+        if (users != null) userCache.addAll(users);
+        renderAll(userCache, groupCache);
+    }
+
     
     public void bind(
             VBox sidebar,
@@ -127,6 +134,117 @@ public class LeftController {
     public void setOnOpenConversation(Consumer<User> cb) { this.onOpenConversation = cb; }
     public void setConnection(ClientConnection conn) { this.connection = conn; }
     public void setHostStage(Stage stage) { this.hostStage = stage; }
+    
+    public void handleUserListFrame(Frame f) {
+        if (f == null) return;
+        String json = f.body;
+        if (json == null || json.isBlank()) return;
+
+        String idStr       = jsonGet(json, "id");
+        String username    = jsonGet(json, "username");
+        String onlineStr   = jsonGet(json, "online");
+        String lastSeenIso = jsonGet(json, "lastSeen");
+        String avatarB64   = jsonGet(json, "avatarBase64");
+
+        int id;
+        try {
+            id = Integer.parseInt(idStr);
+        } catch (Exception e) {
+            return;
+        }
+        if (username == null || username.isBlank()) return;
+
+        // ✅ decode avatar thành bytes + Image
+        byte[] avatarBytes = null;
+        if (avatarB64 != null && !avatarB64.isBlank()) {
+            try {
+                avatarBytes = Base64.getDecoder().decode(avatarB64);
+                Image img = new Image(new ByteArrayInputStream(avatarBytes));
+                avatarCache.put(id, img);
+            } catch (IllegalArgumentException ignore) {
+                // decode fail -> dùng default
+            }
+        }
+
+        boolean online = "1".equals(onlineStr) || "true".equalsIgnoreCase(onlineStr);
+
+        // cập nhật / tạo User trong map
+        User u = idToUser.get(id);
+        boolean isNew = (u == null);
+        if (u == null) {
+            u = new User();
+            u.setId(id);
+        }
+        u.setUsername(username);
+        u.setOnline(online);           // ✅ quan trọng
+        u.setLastSeenIso(lastSeenIso); // ✅ quan trọng
+        if (avatarBytes != null) {
+            u.setAvatar(avatarBytes);  // ✅ để createChatItem dùng được
+        }
+        idToUser.put(id, u);
+
+        final int uidFinal = id;
+        final boolean onlineFinal = online;
+        final String lastSeenFinal = lastSeenIso;
+        final User userFinal = u;
+        final boolean newUserFinal = isNew;
+
+        Platform.runLater(() -> {
+            // ✅ update cache cho search
+            userCache.removeIf(uu -> uu.getId() == uidFinal);
+            userCache.add(userFinal);
+
+            // Nếu là user mới -> tạo row UI
+            if (newUserFinal) {
+                HBox row = createChatItem(userFinal);
+                chatList.getChildren().add(row);
+            }
+
+            // Cập nhật label trạng thái
+            Label lbl = lastLabels.get(uidFinal);
+            if (lbl != null) {
+                lbl.getStyleClass().removeAll("chat-status-online", "chat-status-offline");
+                if (onlineFinal) {
+                    lbl.setText("Online");
+                    lbl.getStyleClass().add("chat-status-online");
+                } else {
+                    String text = "Offline";
+                    if (lastSeenFinal != null && !lastSeenFinal.isBlank()) {
+                        text += humanize(lastSeenFinal, true); // humanize() đã tự thêm " • "
+                    }
+                    lbl.setText(text);
+                    lbl.getStyleClass().add("chat-status-offline");
+                }
+            }
+        });
+    }
+    
+    public void startPresencePolling() {
+        if (connection == null || currentUser == null || !connection.isAlive()) {
+            return;
+        }
+        if (presenceTimer != null) return;
+
+        presenceTimer = new Timeline();  // ✅ dùng constructor không tham số
+        presenceTimer.getKeyFrames().setAll(
+            new KeyFrame(
+                Duration.seconds(10),
+                e -> {
+                    System.out.println("[PRESENCE] polling reloadAll()");
+                    reloadAll();
+                }
+            )
+        );
+        presenceTimer.setCycleCount(Timeline.INDEFINITE);
+        presenceTimer.play();
+    }
+
+    public void stopPresencePolling() {
+        if (presenceTimer != null) {
+            presenceTimer.stop();
+            presenceTimer = null;
+        }
+    }
 
     private void renderUsers(List<User> users) {
         chatList.getChildren().clear();
@@ -140,40 +258,50 @@ public class LeftController {
     }
 
     public void reloadAll() {
-        if (currentUser == null || chatList == null) return;
+        if (chatList == null) return;
+
+        // Nếu chưa có connection hoặc chưa biết currentUser → render cache sẵn có (nếu có)
+        if (connection == null || currentUser == null || !connection.isAlive()) {
+            renderAll(userCache, groupCache);
+            return;
+        }
+
         try {
-            // 1. load users (1-1)
-            List<User> others = UserDAO.listOthers(currentUser.getId());
+            // body tuỳ theo server, anh giả sử handler trên server đang đọc key "q"
+            String body = "{\"q\":\"\"}"; // q="" = lấy tất cả user
 
-            // 2. load groups cho currentUser
-            //    -> tạm thời LeftController hỏi HomeController hoặc gọi DAO trực tiếp?
-            //    Không nên gọi DAO server trực tiếp từ client nếu nhóm là dữ liệu server-side TCP.
-            //    Vì vậy: cách sạch là:
-            //    - giữ một List<GroupViewModel> cache mà HomeController đã set khi nhận GROUP_LIST_RESULT từ server.
-            //    -> Ta thêm biến groupCache dưới đây.
-            renderAll(others, groupCache);
+            Frame req = new Frame(
+                    MessageType.USER_LIST_REQ,          // ✅ yêu cầu danh sách user
+                    currentUser.getUsername(),          // from
+                    "",                                 // to (không cần)
+                    body
+            );
 
-            if (poller == null) startPollingPresence(); // presence chỉ áp dụng cho users
-        } catch (SQLException e) {
-            e.printStackTrace();
+            System.out.println("[LEFT] reloadAll() -> send USER_LIST_REQ");
+            connection.sendFrame(req);
+        } catch (Exception e) {
+            System.err.println("[LEFT] cannot send USER_LIST_REQ: " + e.getMessage());
+            // fallback: nếu gửi lỗi thì vẫn cứ render cache
+            renderAll(userCache, groupCache);
         }
     }
 
 
     public void searchUsers(String keyword) {
-        if (currentUser == null) return;
         String k = (keyword == null) ? "" : keyword.trim();
         if (k.isEmpty()) {
             reloadAll();
-        } else {
-            try {
-                List<User> res = UserDAO.searchUsers(k, currentUser.getId());
-                renderUsers(res);
-                if (poller == null) startPollingPresence();
-            } catch (SQLException e) {
-                e.printStackTrace();
+            return;
+        }
+
+        List<User> filtered = new ArrayList<>();
+        for (User u : userCache) {
+            String name = u.getUsername();
+            if (name != null && name.toLowerCase().contains(k.toLowerCase())) {
+                filtered.add(u);
             }
         }
+        renderUsers(filtered);
     }
 
     private HBox createChatItem(User u) {
@@ -191,8 +319,16 @@ public class LeftController {
         Label name = new Label(u.getUsername());
         name.getStyleClass().add("chat-name");
 
-        Label last = new Label("Offline");
-        last.getStyleClass().addAll("chat-last", "chat-status-offline");
+        Label last = new Label();
+        last.getStyleClass().add("chat-last");
+
+        if (u.isOnline()) {
+            last.setText("Online");
+            last.getStyleClass().add("chat-status-online");
+        } else {
+            last.setText("Offline" + humanize(u.getLastSeenIso(), true));
+            last.getStyleClass().add("chat-status-offline");
+        }
         lastLabels.put(u.getId(), last);
 
         textBox.getChildren().addAll(name, last);
@@ -229,27 +365,15 @@ public class LeftController {
     }
 
     private Image loadAvatarImage(int userId) {
-        try {
-            Image cached = avatarCache.get(userId);
-            if (cached != null) return cached;
+        // cache
+        Image cached = avatarCache.get(userId);
+        if (cached != null) return cached;
 
-            byte[] bytes = UserDAO.getAvatarById(userId); 
-            Image img;
-            if (bytes != null && bytes.length > 0) {
-                img = new Image(new ByteArrayInputStream(bytes));
-            } else {
-                if (defaultAvatar == null) {
-                    defaultAvatar = new Image(
-                        Objects.requireNonNull(
-                            getClass().getResource("/client/view/images/default user.png")
-                        ).toExternalForm()
-                    );
-                }
-                img = defaultAvatar;
-            }
-            avatarCache.put(userId, img);
-            return img;
-        } catch (Exception e) {
+        User u = idToUser.get(userId);
+        Image img;
+        if (u != null && u.getAvatar() != null && u.getAvatar().length > 0) {
+            img = new Image(new ByteArrayInputStream(u.getAvatar()));
+        } else {
             if (defaultAvatar == null) {
                 defaultAvatar = new Image(
                     Objects.requireNonNull(
@@ -257,82 +381,13 @@ public class LeftController {
                     ).toExternalForm()
                 );
             }
-            return defaultAvatar;
+            img = defaultAvatar;
         }
+
+        avatarCache.put(userId, img);
+        return img;
     }
 
-    public void startPollingPresence() {
-        stopPolling();
-        poller = new Timeline(new KeyFrame(Duration.seconds(3), e -> {
-            refreshPresenceOnce();
-            refreshUsersDiff();
-        }));
-        poller.setCycleCount(Timeline.INDEFINITE);
-        poller.play();
-        refreshPresenceOnce();
-        refreshUsersDiff();
-    }
-
-    public void stopPolling() { if (poller != null) { poller.stop(); poller = null; } }
-
-    private void refreshPresenceOnce() {
-        try {
-            Map<Integer, UserDAO.Presence> map = UserDAO.getPresenceOfAll();
-            Platform.runLater(() -> {
-                for (var entry : lastLabels.entrySet()) {
-                    int userId = entry.getKey();
-                    Label lbl = entry.getValue();
-                    UserDAO.Presence p = map.get(userId);
-                    if (p == null) continue;
-
-                    lbl.getStyleClass().removeAll("chat-status-online", "chat-status-offline");
-                    if (p.online) {
-                        lbl.setText("Online");
-                        lbl.getStyleClass().add("chat-status-online");
-                    } else {
-                        lbl.setText("Offline • " + humanize(p.lastSeenIso, false));
-                        lbl.getStyleClass().add("chat-status-offline");
-                    }
-                }
-            });
-        } catch (SQLException ex) {
-            ex.printStackTrace();
-        }
-    }
-    
-    private void refreshUsersDiff() {
-        if (currentUser == null || chatList == null) return;
-        try {
-            List<User> latest = UserDAO.listOthers(currentUser.getId());
-
-            Set<Integer> latestIds = new HashSet<>();
-            for (User u : latest) {
-                latestIds.add(u.getId());
-                if (!idToUser.containsKey(u.getId())) {
-                    idToUser.put(u.getId(), u);
-                    Platform.runLater(() -> chatList.getChildren().add(createChatItem(u)));
-                } else {
-                    idToUser.put(u.getId(), u);
-                }
-            }
-
-            List<Node> toRemove = new ArrayList<>();
-            for (Node n : chatList.getChildren()) {
-                Object ud = n.getUserData();
-                if (ud instanceof Integer id && !latestIds.contains(id)) {
-                    toRemove.add(n);
-                    lastLabels.remove(id);
-                    idToUser.remove(id);
-                }
-            }
-            if (!toRemove.isEmpty()) {
-                Platform.runLater(() -> chatList.getChildren().removeAll(toRemove));
-            }
-
-        } catch (SQLException ex) {
-            ex.printStackTrace();
-        }
-    }
 
     private void applyCollapsedUI(boolean isCollapsed) {
         if (sidebar != null) {
@@ -394,10 +449,7 @@ public class LeftController {
     }
 
     private void performLogout() {
-        try { if (currentUser != null) UserDAO.setOnline(currentUser.getId(), false); } catch (SQLException ignored) {}
-
-        stopPolling();
-
+    	stopPresencePolling(); 
         if (connection != null) {
             try { connection.close(); } catch (Exception ignored) {}
             connection = null;
@@ -563,20 +615,37 @@ public class LeftController {
         }
     }
     public void addSingleGroupToSidebar(GroupViewModel gvm) {
-        // 1. update cache
         if (groupCache == null) groupCache = new ArrayList<>();
         boolean exists = groupCache.stream().anyMatch(x -> x.groupId == gvm.groupId);
         if (!exists) {
             groupCache.add(gvm);
+        } else {
+            // nếu đã có trong cache thì cập nhật thông tin (phòng khi owner/name đổi)
+            for (int i = 0; i < groupCache.size(); i++) {
+                if (groupCache.get(i).groupId == gvm.groupId) {
+                    groupCache.set(i, gvm);
+                    break;
+                }
+            }
         }
 
-        // 2. add vào UI (trước danh sách user)
         groupMap.put(gvm.groupId, gvm);
-        HBox row = createGroupItem(gvm);
 
-        // bạn có thể add nó lên đầu
+        // 🔹 XÓA mọi node cũ của group này khỏi UI
+        java.util.List<Node> toRemove = new java.util.ArrayList<>();
+        for (Node n : chatList.getChildren()) {
+            Object ud = n.getUserData();
+            if (ud instanceof String s && s.equals("group:" + gvm.groupId)) {
+                toRemove.add(n);
+            }
+        }
+        chatList.getChildren().removeAll(toRemove);
+
+        // 🔹 Thêm node mới
+        HBox row = createGroupItem(gvm);
         chatList.getChildren().add(0, row);
     }
+
     public void removeGroupFromSidebar(int groupId) {
         // 1. Xóa trong cache
         if (groupCache != null) {
@@ -597,6 +666,36 @@ public class LeftController {
             }
             chatList.getChildren().removeAll(toRemove);
         });
+    }
+    
+    private static String jsonGet(String json, String key) {
+        if (json == null) return null;
+        String kq = "\"" + key + "\"";
+        int i = json.indexOf(kq);
+        if (i < 0) return null;
+
+        int colon = json.indexOf(':', i + kq.length());
+        if (colon < 0) return null;
+
+        int j = colon + 1;
+        while (j < json.length() && Character.isWhitespace(json.charAt(j))) j++;
+        if (j >= json.length()) return null;
+
+        char c = json.charAt(j);
+        if (c == '"') {
+            int end = json.indexOf('"', j + 1);
+            if (end < 0) return null;
+            return json.substring(j + 1, end);
+        } else {
+            int end = j;
+            while (end < json.length()
+                    && "-0123456789truefals".indexOf(
+                            Character.toLowerCase(json.charAt(end))
+                       ) >= 0) {
+                end++;
+            }
+            return json.substring(j, end);
+        }
     }
 
 }

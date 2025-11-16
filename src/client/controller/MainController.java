@@ -36,7 +36,7 @@ public class MainController {
 
     private enum AuthMode { LOGIN, REGISTER }
     
-    private static final String SERVER_HOST = "192.168.1.143"; // sau này đổi thành IP server
+    private static final String SERVER_HOST = "192.168.1.155"; // sau này đổi thành IP server
     private static final int    SERVER_PORT = 5000;
 
     private void showAuthDialog(AuthMode mode) {
@@ -305,10 +305,9 @@ public class MainController {
             FXMLLoader loader = new FXMLLoader(getClass().getResource("/client/view/Home.fxml"));
             Parent root = loader.load();
             HomeController home = loader.getController();
-            home.setCurrentUser(loggedInUser);
             home.setConnection(conn);
+            home.setCurrentUser(loggedInUser);
             home.setCallService(callSvc);
-            home.reloadAll();
             Scene scene = new Scene(root);
             scene.getStylesheets().add(getClass().getResource("/client/view/chat.css").toExternalForm());
             stage.setScene(scene);

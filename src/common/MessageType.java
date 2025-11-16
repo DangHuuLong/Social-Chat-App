@@ -45,7 +45,9 @@ public enum MessageType {
 	GROUP_SYSTEM((byte)48),
 	GROUP_LIST((byte)49),
 	AUTH_REGISTER((byte)50),
-    AUTH_LOGIN   ((byte)51);
+    AUTH_LOGIN   ((byte)51),
+    USER_LIST_REQ((byte)52),
+    USER_LIST    ((byte)53);	
 	
     public final byte id;
     MessageType(byte id){ this.id = id; }

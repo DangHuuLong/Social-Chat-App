@@ -86,6 +86,18 @@ public class ClientConnection {
         Frame req = new Frame(MessageType.DOWNLOAD_FILE, "", "", fileId);
         sendFrame(req);
     }
+    
+    // ==== USER LIST (for LeftController) ====
+    public void requestUserList(String keyword) throws IOException {
+        String body;
+        if (keyword == null || keyword.isBlank()) {
+            body = "{}";
+        } else {
+            body = "{\"q\":\"" + esc(keyword) + "\"}";
+        }
+        Frame f = new Frame(MessageType.USER_LIST_REQ, "", "", body);
+        sendFrame(f);
+    }
 
     public void startListener(Consumer<Frame> onFrame, Consumer<Exception> onError) {
         this.onFrame = onFrame;
@@ -162,7 +174,7 @@ public class ClientConnection {
 
         if (avatarBytes != null && avatarBytes.length > 0 &&
                 avatarMime != null && !avatarMime.isBlank()) {
-            String b64 = Base64.getEncoder().encodeToString(avatarBytes);
+            String b64 = Base64.getEncoder().encodeToString(avatarBytes);	
             sb.append(",\"avatarMime\":\"").append(esc(avatarMime)).append("\",")
               .append("\"avatarBase64\":\"").append(b64).append("\"");
         }

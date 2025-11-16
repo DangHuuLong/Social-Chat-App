@@ -27,12 +27,10 @@ import javafx.scene.layout.*;
 import javafx.scene.media.MediaPlayer;
 import javafx.stage.Stage;
 import javafx.stage.Window;
-import server.dao.UserDAO;
 import javafx.util.Duration;
 import javax.sound.sampled.AudioFormat;
 import java.io.BufferedOutputStream;
 import java.io.File;
-import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -297,19 +295,14 @@ public class MidController implements CallSignalListener {
         if (messageField != null) messageField.clear();
         if (currentChatName != null) currentChatName.setText(u.getUsername());
 
-        try {
-            UserDAO.Presence p = UserDAO.getPresence(u.getId());
-            boolean online = p != null && p.online;
-            String lastSeen = (p != null) ? p.lastSeenIso : null;
-            applyStatusLabel(currentChatStatus, online, lastSeen);
-            if (rightController != null) rightController.showUser(u, online, lastSeen);
-        } catch (SQLException e) {
-            e.printStackTrace();
-            applyStatusLabel(currentChatStatus, false, null);
-            if (rightController != null) rightController.showUser(u, false, null);
+        boolean online = u.isOnline();
+        String lastSeen = u.getLastSeenIso();
+        applyStatusLabel(currentChatStatus, online, lastSeen);
+        if (rightController != null) {
+            rightController.showUser(u, online, lastSeen);
         }
 
-        Image peerAvatar = loadAvatarImage(u.getId());
+        Image peerAvatar = loadAvatarImage(u);
         if (midHeaderAvatar != null && peerAvatar != null) {
             midHeaderAvatar.setImage(peerAvatar);
         }
@@ -399,20 +392,20 @@ public class MidController implements CallSignalListener {
         }
     }
 
-	private Image loadAvatarImage(int userId) {
-	    try {
-	        byte[] bytes = server.dao.UserDAO.getAvatarById(userId); 
-	        if (bytes != null && bytes.length > 0) {
-	            return new Image(new java.io.ByteArrayInputStream(bytes));
-	        }
-	    } catch (Exception ignore) { }
-	    // fallback default
-	    return new Image(
-	        Objects.requireNonNull(
-	            getClass().getResource("/client/view/images/default user.png")
-	        ).toExternalForm()
-	    );
-	}
+    private Image loadAvatarImage(User u) {
+        try {
+            byte[] bytes = (u != null) ? u.getAvatar() : null;
+            if (bytes != null && bytes.length > 0) {
+                return new Image(new java.io.ByteArrayInputStream(bytes));
+            }
+        } catch (Exception ignore) { }
+        return new Image(
+            Objects.requireNonNull(
+                getClass().getResource("/client/view/images/default user.png")
+            ).toExternalForm()
+        );
+    }
+
     
     private void snapshotText(String text, boolean incoming) {
         if (text == null) return;

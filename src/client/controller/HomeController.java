@@ -6,14 +6,9 @@ import client.signaling.CallSignalingService;
 import common.Frame;
 import common.MessageType;
 import common.User;
-import javafx.animation.KeyFrame;
-import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.fxml.FXML;
-import javafx.fxml.FXMLLoader;
 import javafx.scene.Node;
-import javafx.scene.Parent;
-import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -21,23 +16,16 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
-import javafx.scene.shape.Rectangle;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
-import server.dao.UserDAO;
 import javax.sound.sampled.*;
-import javafx.scene.image.Image;
 import java.io.*;
-import java.sql.SQLException;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
-import javafx.scene.control.Dialog;
 import javafx.scene.image.ImageView;
 import javafx.scene.control.ButtonType;
-import javafx.util.Duration;
 
 public class HomeController {
 	@FXML private StackPane rootStack;
@@ -232,9 +220,9 @@ public class HomeController {
         leftCtrl.setCurrentUser(user);
         midCtrl.setCurrentUser(user);
         leftCtrl.reloadAll();
-        requestGroupListFromServer();
+//        requestGroupListFromServer();
         updateInviteButtonLabel();
-
+//        leftCtrl.startPresencePolling();
     }
 
     public void setConnection(ClientConnection conn) {
@@ -605,6 +593,11 @@ public class HomeController {
                 }
                 break;
             }
+            case USER_LIST: {
+                // f.body ví dụ: {"id":3,"username":"Long","online":1,"lastSeen":"2025-11-15 09:30:00",...}
+                leftCtrl.handleUserListFrame(f);
+                break;
+            }
 
             // ACK từ server: dùng cho nhiều mục đích
             // - LOGIN: "OK LOGIN <username>"
@@ -648,6 +641,13 @@ public class HomeController {
 
                     break; // quan trọng: mình xử lý xong case OK_GROUP_CREATED rồi thì break
                 }
+                if (body.startsWith("🔵 ") || body.startsWith("🔴 ")) {
+                    System.out.println("[PRESENCE] broadcast: " + body);
+                    Platform.runLater(() -> {
+                        // gọi lại USER_LIST_REQ để update online/offline + last_seen
+                        leftCtrl.reloadAll();
+                    });
+                }
 
                 // 2. Các ACK khác (login, delivered...) bạn giữ nguyên logic cũ nếu có
                 //    ví dụ: if (body.startsWith("OK LOGIN")) { ... }
@@ -678,7 +678,7 @@ public class HomeController {
         }
 
         // cuối cùng forward frame nào cũng đưa cho midCtrl xử lý chat, file, call, vv.
-        if (midCtrl != null) {
+        if (midCtrl != null && f.type != MessageType.USER_LIST) {
             Platform.runLater(() -> midCtrl.onIncomingFrame(f));
         }
     }

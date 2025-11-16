@@ -113,6 +113,7 @@ public class ClientHandler implements Runnable {
                     case LIST_MEMBERS -> handleListMember(f);
                     case GROUP_MSG -> handleGroupMessage(f);
                     case GROUP_HISTORY -> handleGroupHistory(f);
+                    case USER_LIST_REQ -> handleUserListReq(f);
                     default -> System.out.println("[SERVER] Unknown frame: " + f.type);
                 }
             }
@@ -123,6 +124,69 @@ public class ClientHandler implements Runnable {
             cleanup();
         }
     }
+    
+    /* ================= USER LIST (for Left sidebar) ================= */
+    private void handleUserListReq(Frame f) {
+        try {
+            String body = (f.body == null) ? "" : f.body.trim();
+            String q = jsonGet(body, "q");
+
+            // lấy danh sách user khác mình
+            java.util.List<User> users = (q == null || q.isBlank())
+                    ? UserDAO.listOthers(this.userId)
+                    : UserDAO.searchUsers(q, this.userId);
+
+            // presence chung cho tất cả
+            java.util.Map<Integer, UserDAO.Presence> presMap = UserDAO.getPresenceOfAll();
+
+            int count = 0;
+            for (User u : users) {
+                UserDAO.Presence p = presMap.get(u.getId());
+                boolean online = (p != null && p.online);
+                String lastSeen = (p != null) ? p.lastSeenIso : null;
+
+                // avatar
+                byte[] avatarBytes = null;
+                try {
+                    avatarBytes = UserDAO.getAvatarById(u.getId());
+                } catch (Exception ignore) {}
+
+                StringBuilder sb = new StringBuilder();
+                sb.append("{\"id\":").append(u.getId())
+                  .append(",\"username\":\"").append(escJson(u.getUsername())).append("\"")
+                  .append(",\"online\":").append(online ? 1 : 0);
+
+                if (lastSeen != null && !lastSeen.isBlank()) {
+                    sb.append(",\"lastSeen\":\"").append(escJson(lastSeen)).append("\"");
+                }
+                if (avatarBytes != null && avatarBytes.length > 0) {
+                    String b64 = java.util.Base64.getEncoder().encodeToString(avatarBytes);
+                    sb.append(",\"avatarBase64\":\"").append(b64).append("\"");
+                }
+
+                sb.append("}");
+
+                Frame out = new Frame(
+                        MessageType.USER_LIST,
+                        "server",
+                        this.username,
+                        sb.toString()
+                );
+                sendFrame(out);
+                count++;
+            }
+
+            sendFrame(Frame.ack("OK USER_LIST " + count));
+
+        } catch (java.sql.SQLException e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("USER_LIST_DB_ERROR"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            sendFrame(Frame.error("USER_LIST_FAIL"));
+        }
+    }
+
     
     /* ================= AUTH REGISTER (DB only) ================= */
     private void handleAuthRegister(Frame f) {
