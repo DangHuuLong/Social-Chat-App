@@ -74,21 +74,56 @@ public class UtilHandler {
         String kq = "\"" + key + "\"";
         int i = json.indexOf(kq);
         if (i < 0) return null;
+
         int colon = json.indexOf(':', i + kq.length());
         if (colon < 0) return null;
+
         int j = colon + 1;
-        while (j < json.length() && Character.isWhitespace(json.charAt(j))) j++;
-        if (j >= json.length()) return null;
-        char c = json.charAt(j);
-        if (c == '"') {
-            int end = json.indexOf('"', j + 1);
-            if (end < 0) return null;
-            return json.substring(j + 1, end);
-        } else {
-            int end = j;
-            while (end < json.length() && "-0123456789".indexOf(json.charAt(end)) >= 0) end++;
-            return json.substring(j, end);
+        while (j < json.length() && Character.isWhitespace(json.charAt(j))) {
+            j++;
         }
+        if (j >= json.length()) return null;
+
+        char c = json.charAt(j);
+
+        // ===== CHUỖI =====
+        if (c == '"') {
+            StringBuilder sb = new StringBuilder();
+            boolean escape = false;
+
+            for (int k = j + 1; k < json.length(); k++) {
+                char ch = json.charAt(k);
+
+                if (escape) {
+                    switch (ch) {
+                        case '"': sb.append('"'); break;
+                        case '\\': sb.append('\\'); break;
+                        case 'n': sb.append('\n'); break;
+                        case 't': sb.append('\t'); break;
+                        case 'r': sb.append('\r'); break;
+                        default: sb.append(ch); break;
+                    }
+                    escape = false;
+                } else if (ch == '\\') {
+                    escape = true;
+                } else if (ch == '"') {
+                    // kết thúc chuỗi
+                    return sb.toString();
+                } else {
+                    sb.append(ch);
+                }
+            }
+            // không tìm thấy dấu " đóng, trả về những gì đọc được
+            return sb.toString();
+        }
+
+        // ===== SỐ (giữ nguyên behaviour cũ) =====
+        int end = j;
+        while (end < json.length() && "-0123456789".indexOf(json.charAt(end)) >= 0) {
+            end++;
+        }
+        if (end == j) return null;
+        return json.substring(j, end);
     }
 
     public static String guessExt(String mime, String fallbackName) {

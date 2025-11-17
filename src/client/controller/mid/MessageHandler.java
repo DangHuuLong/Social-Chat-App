@@ -101,10 +101,17 @@ public class MessageHandler {
         if (body.startsWith("[CALLLOG]")) {
             if (openPeer != null && openPeer.equals(sender)) {
                 CallLogData d = parseCallLog(body);
-                renderCallLogOnce(d, true, sender, createdAt);
+                renderCallLogOnce(
+                        d,
+                        sender,                // dmSender
+                        createdAt,
+                        0L,
+                        f.transferId           // msgId nếu server set
+                );
             }
             return;
         }
+
 
         if (openPeer != null && openPeer.equals(sender)) {
         	HBox row = controller.addTextMessage(
@@ -195,7 +202,13 @@ public class MessageHandler {
 	     if (body.startsWith("[CALLLOG]")) {
 	         CallLogData d = parseCallLog(body);
 	         // ✅ CẬP NHẬT: CallLog cần sender và createdAt
-	         renderCallLogOnce(d, incoming, sender, createdAt);
+	         renderCallLogOnce(
+	                 d,
+	                 sender,                           // dmSender trong HISTORY
+	                 createdAt,
+	                 updatedAt,
+	                 (transferId == null ? null : String.valueOf(transferId))
+	         );
 	         return;
 	     }
 	
@@ -967,17 +980,64 @@ public class MessageHandler {
         return true;
     }
 
-    private void renderCallLogOnce(CallLogData d, boolean defaultIncoming, String sender, long createdAt) {
+    private void renderCallLogOnce(
+            CallLogData d,
+            String dmSender,      // sender trong DM/HISTORY (username)
+            long createdAt,
+            long updatedAt,
+            String msgIdStr       // transferId nếu có
+    ) {
         if (d == null) return;
+
+        // 🔁 Chống vẽ trùng cùng 1 cuộc gọi (dựa trên callId)
         if (d.callId != null && !d.callId.isBlank()) {
-            if (!controller.markCallLogShownOnce(d.callId)) return;
+            if (!controller.markCallLogShownOnce(d.callId)) {
+                return;
+            }
         }
-        boolean incoming = (d.caller != null || d.callee != null)
-                ? isIncomingForThisClient(d)
-                : defaultIncoming;
-        
-        // ✅ SỬA: Thêm sender, createdAt, updatedAt
-        controller.addCallLog(d.icon, d.title, d.subtitle, incoming, sender, createdAt, 0L);
+
+        String self = (controller.getCurrentUser() != null)
+                ? controller.getCurrentUser().getUsername()
+                : "";
+
+        // 1️⃣ Xác định incoming / outgoing dựa trên caller/callee
+        boolean incoming;
+        if (d.caller != null && !d.caller.isBlank()) {
+            // mình là caller → outgoing; còn lại → incoming
+            incoming = !self.equals(d.caller);
+        } else if (d.callee != null && !d.callee.isBlank()) {
+            // thiếu caller (data cũ) → fallback: mình là callee → incoming
+            incoming = self.equals(d.callee);
+        } else {
+            // data lỗi / rất cũ → fallback cuối: dùng dmSender
+            incoming = !self.equals(dmSender);
+        }
+
+        // 2️⃣ Xác định username để lấy avatar: ưu tiên caller
+        String senderForAvatar;
+        if (d.caller != null && !d.caller.isBlank()) {
+            senderForAvatar = d.caller;
+        } else if (d.callee != null && !d.callee.isBlank()) {
+            senderForAvatar = d.callee;
+        } else {
+            senderForAvatar = dmSender;
+        }
+
+        // 3️⃣ Render bubble call log
+        HBox row = controller.addCallLog(
+                d.icon,
+                d.title,
+                d.subtitle,
+                incoming,
+                senderForAvatar,
+                createdAt,
+                updatedAt
+        );
+
+        // 4️⃣ Gắn messageId để EDIT/DELETE dùng được
+        if (msgIdStr != null && !msgIdStr.isBlank()) {
+            row.setUserData(msgIdStr);
+        }
     }
 
  // === SMART REPLY ===
@@ -1083,23 +1143,23 @@ public class MessageHandler {
             // CALLLOG trong group (nếu có)
             if (head.startsWith("[CALLLOG]")) {
                 CallLogData d = parseCallLog(head);
-                renderCallLogOnce(d, incoming, sender, createdAt);
+                renderCallLogOnce(
+                        d,
+                        sender,                 
+                        createdAt,
+                        0L,
+                        msgIdStr
+                );
                 return;
             }
 
-            // Prefix tên người gửi cho tin incoming
-            String senderPrefix = (incoming && sender != null && !sender.isBlank())
-                    ? sender + ": "
-                    : "";
-
-            // Tạo bubble: outgoing không cần prefix, incoming có prefix
             HBox row = controller.addTextMessage(
-                    incoming ? (senderPrefix + clean) : clean,
+                    clean,          
                     incoming,
                     msgIdStr,
                     sender,
-                    System.currentTimeMillis(), // Thời gian nhận (realtime)
-                    0L // chưa chỉnh sửa
+                    createdAt,
+                    0L
             );
 
             // Gắn messageId để EDIT_MSG / DELETE_MSG dùng được
