@@ -757,14 +757,12 @@ public class UIMessageHandler {
         return row;
     }
 
-    public HBox addVoiceMessage(String duration, boolean incoming, String fileId, String sender, long createdAt, long updatedAt) {
+    public HBox addVoiceMessage(String duration, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
         if (controller.getMessageContainer().getChildren().size() > 100) {
             controller.getMessageContainer().getChildren().remove(0);
         }
-        HBox row = new HBox(6);
-        row.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
-        row.setUserData(fileId);
-        if (fileId != null) row.getProperties().put("fid", fileId);
+
+        // 1. Bubble voice
         HBox voiceBox = new HBox(10);
         voiceBox.setId(incoming ? "incoming-voice" : "outgoing-voice");
         voiceBox.setAlignment(Pos.CENTER_LEFT);
@@ -777,50 +775,49 @@ public class UIMessageHandler {
         slider.setPrefWidth(200);
         slider.setId("voiceSlider");
 
-        Label dur = new Label(duration);
+        Label dur = new Label(duration == null || duration.isBlank() ? "--:--" : duration);
         dur.setId("voiceDuration");
 
         voiceBox.getChildren().addAll(playBtn, slider, dur);
 
-        Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
+        // 2. Bọc qua addRowWithBubble để có avatar + header
+        HBox row = addRowWithBubble(voiceBox, incoming, messageId, sender, createdAt, updatedAt);
 
-        if (incoming) row.getChildren().addAll(voiceBox, spacer);
-        else          row.getChildren().addAll(spacer, voiceBox);
+        // 3. Gắn metadata (messageId có thể là mid hoặc fid/uuid)
+        if (messageId != null) {
+            row.setUserData(messageId);
+            boolean numeric = false;
+            try { Long.parseLong(messageId); numeric = true; } catch (Exception ignore) {}
 
-        attachSideMenu(row, spacer, incoming, fileId);
-
-        controller.getMessageContainer().getChildren().add(row);
-        if (!incoming && fileId != null) {
-            controller.getOutgoingFileBubbles().put(fileId, row);
+            if (!numeric) { // đang dùng fid/uuid tạm
+                row.getProperties().put("fid", messageId);
+                if (!incoming) {
+                    controller.getOutgoingFileBubbles().put(messageId, row);
+                }
+            }
         }
+
+        // 4. Reply chip (nếu đang ở trạng thái reply)
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
             if (chip != null) {
-                // voice là HBox; ta quấn chip + voiceBox trong VBox cho gọn
-                VBox wrapper = new VBox(6);
-                wrapper.setId(voiceBox.getId()); // giữ id để CSS áp dụng như cũ
-                voiceBox.setId(null);
-                wrapper.getChildren().addAll(chip, voiceBox);
-
-                // thay bubble trong row
-                int idx = incoming ? 0 : row.getChildren().size()-1;
-                row.getChildren().set(idx, wrapper);
+                // tìm bubble box để gắn chip (voice ban đầu là HBox nên findBubbleBox sẽ tự bọc VBox)
+                VBox bubbleBox = findBubbleBox(row);
+                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
             }
             controller.clearReplyPreview();
         }
+
         return row;
     }
 
     /* VIDEO: chỉ khu vực phát + nút Play + Slider, KHÔNG label */
-    public HBox addVideoMessage(String filename, String meta, boolean incoming, String fileId, String sender, long createdAt, long updatedAt) {
+    /* VIDEO: khu vực phát + nút Play + Slider, KHÔNG label tên trong bubble (thông tin nằm ở header) */
+    public HBox addVideoMessage(String filename, String meta, boolean incoming, String messageId, String sender, long createdAt, long updatedAt) {
         if (controller.getMessageContainer().getChildren().size() > 100) {
             controller.getMessageContainer().getChildren().remove(0);
         }
-        HBox row = new HBox(6);
-        row.setAlignment(incoming ? Pos.CENTER_LEFT : Pos.CENTER_RIGHT);
-        row.setUserData(fileId);
-        if (fileId != null) row.getProperties().put("fid", fileId);
+
         VBox box = new VBox(6);
         box.setId(incoming ? "incoming-video" : "outgoing-video");
         box.setAlignment(Pos.CENTER_LEFT);
@@ -843,30 +840,33 @@ public class UIMessageHandler {
         controls.getChildren().addAll(playBtn, slider);
         box.getChildren().addAll(videoArea, controls);
 
-        Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
+        // Bọc qua addRowWithBubble để có avatar + header
+        HBox row = addRowWithBubble(box, incoming, messageId, sender, createdAt, updatedAt);
 
-        if (incoming) row.getChildren().addAll(box, spacer);
-        else          row.getChildren().addAll(spacer, box);
+        // Gắn metadata (messageId có thể là mid hoặc fid/uuid)
+        if (messageId != null) {
+            row.setUserData(messageId);
+            boolean numeric = false;
+            try { Long.parseLong(messageId); numeric = true; } catch (Exception ignore) {}
 
-        attachSideMenu(row, spacer, incoming, fileId);
-
-        controller.getMessageContainer().getChildren().add(row);
-        if (!incoming && fileId != null) {
-            controller.getOutgoingFileBubbles().put(fileId, row);
+            if (!numeric) { // đang dùng fid/uuid tạm
+                row.getProperties().put("fid", messageId);
+                if (!incoming) {
+                    controller.getOutgoingFileBubbles().put(messageId, row);
+                }
+            }
         }
+
+        // Reply chip nếu đang reply
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
             if (chip != null) {
-                VBox wrapper = new VBox(6);
-                wrapper.setId(box.getId());
-                box.setId(null);
-                wrapper.getChildren().addAll(chip, box);
-                int idx = incoming ? 0 : row.getChildren().size()-1;
-                row.getChildren().set(idx, wrapper);
+                VBox bubbleBox = findBubbleBox(row);
+                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
             }
             controller.clearReplyPreview();
         }
+
         return row;
     }
 

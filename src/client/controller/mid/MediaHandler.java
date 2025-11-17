@@ -34,10 +34,39 @@ public class MediaHandler {
 
     private Node getBubbleNode(HBox row) {
         if (row == null || row.getChildren().isEmpty()) return null;
-        Node first = row.getChildren().get(0);
-        Node last  = row.getChildren().get(row.getChildren().size() - 1);
-        return (row.getAlignment() == Pos.CENTER_LEFT) ? first : last;
+
+        boolean incoming = isIncomingRow(row);
+        int sideIdx = incoming ? 0 : row.getChildren().size() - 1;
+        Node side = row.getChildren().get(sideIdx);
+
+        // Layout mới: side = messageVBoxWrapper
+        if (side instanceof VBox wrapper && wrapper.getStyleClass().contains("message-vbox-wrapper")) {
+            if (!wrapper.getChildren().isEmpty() && wrapper.getChildren().get(0) instanceof HBox contentHBox) {
+                contentHBox = (HBox) wrapper.getChildren().get(0);
+
+                // contentHBox: [avatar, contentVBox] (incoming) hoặc [contentVBox, avatar] (outgoing)
+                Node contentNode;
+                if (incoming) {
+                    if (contentHBox.getChildren().size() < 2) return null;
+                    contentNode = contentHBox.getChildren().get(1);
+                } else {
+                    if (contentHBox.getChildren().isEmpty()) return null;
+                    contentNode = contentHBox.getChildren().get(0);
+                }
+
+                if (contentNode instanceof VBox contentVBox) {
+                    // contentVBox: [header, bubble]
+                    if (contentVBox.getChildren().size() >= 2) {
+                        return contentVBox.getChildren().get(1); // bubble thật (image/file/voice/video)
+                    }
+                }
+            }
+        }
+
+        // Fallback layout cũ
+        return (incoming ? row.getChildren().get(0) : row.getChildren().get(row.getChildren().size() - 1));
     }
+
 
     private <T extends Node> Optional<T> findById(Node root, String id, Class<T> type) {
         if (root == null) return Optional.empty();
@@ -70,9 +99,40 @@ public class MediaHandler {
     private void replaceBubble(HBox row, Node newBubble) {
         if (row == null || newBubble == null || row.getChildren().isEmpty()) return;
         boolean incoming = isIncomingRow(row);
-        int idx = incoming ? 0 : row.getChildren().size() - 1;
-        row.getChildren().set(idx, newBubble);
+        int sideIdx = incoming ? 0 : row.getChildren().size() - 1;
+        Node side = row.getChildren().get(sideIdx);
+
+        // Layout mới: sửa bubble bên trong messageVBoxWrapper, giữ nguyên avatar + header
+        if (side instanceof VBox wrapper && wrapper.getStyleClass().contains("message-vbox-wrapper")) {
+            if (!wrapper.getChildren().isEmpty() && wrapper.getChildren().get(0) instanceof HBox contentHBox) {
+                contentHBox = (HBox) wrapper.getChildren().get(0);
+
+                int contentIdx;
+                if (incoming) {
+                    if (contentHBox.getChildren().size() < 2) return;
+                    contentIdx = 1; // [avatar, contentVBox]
+                } else {
+                    if (contentHBox.getChildren().isEmpty()) return;
+                    contentIdx = 0; // [contentVBox, avatar]
+                }
+
+                Node contentNode = contentHBox.getChildren().get(contentIdx);
+                if (contentNode instanceof VBox contentVBox) {
+                    // contentVBox: [header, bubble]
+                    if (contentVBox.getChildren().size() >= 2) {
+                        contentVBox.getChildren().set(1, newBubble);
+                    } else {
+                        contentVBox.getChildren().add(newBubble);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Fallback: layout cũ -> thay trực tiếp
+        row.getChildren().set(sideIdx, newBubble);
     }
+
 
     /* ===================== AUDIO ===================== */
     public void updateVoiceBubbleFromUrl(HBox row, String fileUrl) {
