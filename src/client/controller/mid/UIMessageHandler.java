@@ -15,16 +15,12 @@ import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.util.Duration;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import javax.swing.JDialog;
-import javax.swing.JOptionPane;
-import java.awt.Desktop;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 
 import client.controller.MidController;
+import client.controller.mid.UtilHandler.MediaKind;
 
 public class UIMessageHandler {
     private final MidController controller;
@@ -32,6 +28,73 @@ public class UIMessageHandler {
     public UIMessageHandler(MidController controller) {
         this.controller = controller;
     }
+    
+    /** Lấy content VBox (chứa header + bubble) từ 1 row */
+    private VBox findContentVBoxInRow(HBox row) {
+        if (row == null || row.getChildren().isEmpty()) return null;
+
+        // Bên nào có messageVBoxWrapper
+        Node side = (row.getAlignment() == Pos.CENTER_LEFT)
+                ? row.getChildren().get(0)
+                : row.getChildren().get(row.getChildren().size() - 1);
+
+        if (!(side instanceof VBox wrapper)) return null;
+
+        // wrapper.children = [contentHBox]
+        for (Node n : wrapper.getChildren()) {
+            if (n instanceof HBox h) {
+                for (Node c : h.getChildren()) {
+                    if (c instanceof VBox contentVBox) {
+                        return contentVBox;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Lấy bubble Region (VBox/HBox có id incoming-text, incoming-file, ...) */
+    private Region findBubbleRegion(HBox row) {
+        VBox content = findContentVBoxInRow(row);
+        if (content == null || content.getChildren().isEmpty()) return null;
+
+        // Bubble luôn là phần tử CUỐI trong contentVBox (sau header và reply-chip)
+        Node last = content.getChildren().get(content.getChildren().size() - 1);
+        return (last instanceof Region r) ? r : null;
+    }
+
+    /** Kiểm tra row đã có reply-chip hay chưa */
+    private boolean hasReplyChipOnRow(HBox row) {
+        VBox content = findContentVBoxInRow(row);
+        if (content == null) return false;
+        for (Node n : content.getChildren()) {
+            if (n instanceof VBox vb && vb.getStyleClass().contains("reply-chip")) return true;
+        }
+        return false;
+    }
+
+    /** Gắn reply-chip vào row: đặt giữa header và bubble */
+    private void attachReplyChipToRow(HBox row, VBox chip) {
+        if (row == null || chip == null) return;
+        VBox content = findContentVBoxInRow(row);
+        if (content == null) return;
+
+        // Tránh gắn trùng
+        for (Node n : content.getChildren()) {
+            if (n == chip) return;
+            if (n instanceof VBox vb && vb.getStyleClass().contains("reply-chip")) return;
+        }
+
+        int idx = 0;
+        if (!content.getChildren().isEmpty()) {
+            Node first = content.getChildren().get(0);
+            if (first instanceof HBox && first.getStyleClass().contains("message-header")) {
+                idx = 1; // header ở index 0 → chip ở index 1
+            }
+        }
+        content.getChildren().add(idx, chip);
+    }
+
 
     /* chỉ giữ size nếu meta có cả MIME • SIZE */
     private static String normalizeSizeOnly(String meta) {
@@ -75,6 +138,7 @@ public class UIMessageHandler {
         MenuItem miDelete = new MenuItem("Xóa");
         miDelete.getStyleClass().add("msg-context-item-danger");
         cm.getItems().addAll(miEdit, miDelete);
+
         MenuItem miDownload = new MenuItem("Tải xuống…");
         miDownload.getStyleClass().add("msg-context-item");
         cm.getItems().add(new SeparatorMenuItem());
@@ -83,18 +147,15 @@ public class UIMessageHandler {
         MenuItem miReply = new MenuItem("Trả lời");
         miReply.getStyleClass().add("msg-context-item");
         cm.getItems().add(miReply);
-        Node bubble = null;
-        if (incoming) {
-            if (!row.getChildren().isEmpty()) bubble = row.getChildren().get(0);
-        } else {
-            if (!row.getChildren().isEmpty()) bubble = row.getChildren().get(row.getChildren().size() - 1);
-        }
-        String bubbleId = (bubble instanceof Region r) ? r.getId() : null;
 
-        final Label labelRef = findTextLabelInRow(row, incoming);
-        final boolean canEdit = (labelRef != null) && "outgoing-text".equals(
-                (row.getChildren().isEmpty() ? null
-                        : ((Region)(incoming ? row.getChildren().get(0) : row.getChildren().get(row.getChildren().size()-1)))).getId());
+        // ✅ LẤY BUBBLE THẬT
+        Region bubble = findBubbleRegion(row);
+        String bubbleId = (bubble != null) ? bubble.getId() : null;
+
+        // Text label dùng cho Edit
+        final Label labelRef = findTextLabelInRow(row);
+
+        final boolean canEdit = (labelRef != null) && "outgoing-text".equals(bubbleId);
         miEdit.setDisable(!canEdit);
 
         miEdit.setOnAction(e -> {
@@ -253,10 +314,8 @@ public class UIMessageHandler {
             controller.showReplyPreview(row, incoming);
         });
         cm.setOnShowing(e -> {
-            Node b = null;
-            if (incoming) { if (!row.getChildren().isEmpty()) b = row.getChildren().get(0); }
-            else { if (!row.getChildren().isEmpty()) b = row.getChildren().get(row.getChildren().size() - 1); }
-            String bid = (b instanceof Region r) ? r.getId() : null;
+        	Region b = findBubbleRegion(row);
+            String bid = (b != null) ? b.getId() : null;
             boolean isOutgoing = bid != null && bid.startsWith("outgoing-");
             System.out.println("[MENU] onShowing bubbleId=" + bid + " isOutgoing=" + isOutgoing);
 
@@ -290,6 +349,7 @@ public class UIMessageHandler {
             boolean enableDelete = isOutgoing && (hasNumeric || hasFid);
             miDelete.setDisable(!enableDelete);
             System.out.println("[MENU] onShowing enableDelete=" + enableDelete);
+
             boolean isFileLike = false;
             if (bid != null) {
                 isFileLike = bid.endsWith("-file") || bid.endsWith("-image")
@@ -334,10 +394,7 @@ public class UIMessageHandler {
     }
     /*REPLY*/
     private VBox buildReplyChipForRowToRow(HBox srcRow, HBox newMsgRow, boolean newMsgIncoming) {
-        // Tạo chip giống buildReplyChipForCurrentContext nhưng nguồn là srcRow
-        Node srcBubble = (srcRow.getAlignment() == Pos.CENTER_LEFT)
-                ? srcRow.getChildren().get(0)
-                : srcRow.getChildren().get(srcRow.getChildren().size()-1);
+        Region srcBubble = findBubbleRegion(srcRow);
         String srcId = (srcBubble instanceof Region r) ? r.getId() : null;
 
         String title = buildReplyTitleForRows(srcRow, newMsgRow);
@@ -347,15 +404,18 @@ public class UIMessageHandler {
             if (srcBubble instanceof VBox vb) {
                 for (Node n : vb.getChildren()) if (n instanceof Label l) { snippet = l.getText(); break; }
             }
-        } else if (srcId != null && srcId.endsWith("-image"))  snippet = "Ảnh";
-        else if (srcId != null && srcId.endsWith("-video"))    snippet = "Video";
-        else if (srcId != null && srcId.endsWith("-voice"))    snippet = "Tin nhắn thoại";
-        else if (srcId != null && srcId.endsWith("-file")) {
-            if (srcBubble instanceof VBox vb) {
-                for (Node c : vb.lookupAll("#fileNamePrimary")) if (c instanceof Label l) { snippet = l.getText(); break; }
-            }
-            if (snippet == null || snippet.isBlank()) snippet = "Tệp đính kèm";
-        } else snippet = "Tin nhắn";
+        } else if (srcId != null && srcId.endsWith("-image"))  {
+            snippet = "Ảnh";
+        } else if (srcId != null && srcId.endsWith("-video")) {
+            snippet = "Video";
+        } else if (srcId != null && srcId.endsWith("-voice")) {
+            snippet = "Tin nhắn thoại";
+        } else if (srcId != null && srcId.endsWith("-file")) {
+            snippet = buildFileReplySnippet(srcBubble, srcRow);
+        }
+        else {
+            snippet = "Tin nhắn cuộc gọi";
+        }
 
         if (snippet != null && snippet.length() > 140) snippet = snippet.substring(0,140) + "…";
 
@@ -366,7 +426,7 @@ public class UIMessageHandler {
         lbText.setWrapText(true); lbText.getStyleClass().add("reply-chip-text");
         chip.getChildren().addAll(lbTitle, lbText);
 
-        // click để scroll tới nguồn
+        // click → scroll tới source
         chip.setOnMouseClicked(ev -> controller.scrollToRow(srcRow));
 
         return chip;
@@ -375,34 +435,78 @@ public class UIMessageHandler {
     public void attachReplyChipById(HBox newMsgRow, boolean newMsgIncoming, String replyToId) {
         if (replyToId == null || replyToId.isBlank() || newMsgRow == null) return;
 
-        // Tìm nguồn (message bị reply)
         HBox srcRow = controller.findRowByUserData(replyToId);
         if (srcRow == null) {
-            // treo chờ tới khi message gốc render xong
             controller.getPendingReplyLinks()
                     .computeIfAbsent(replyToId, k -> new java.util.ArrayList<>())
                     .add(newMsgRow);
             return;
         }
 
-        // Tìm/chuẩn hoá bubble đích (new message) – hỗ trợ mọi loại bubble
-        VBox targetBox = findBubbleBox(newMsgRow);
-        if (targetBox == null) return;
-
-        // Tránh gắn trùng
-        if (hasReplyChip(targetBox)) return;
-
-        // Build chip
         VBox chip = buildReplyChipForRowToRow(srcRow, newMsgRow, newMsgIncoming);
+        attachReplyChipToRow(newMsgRow, chip);
 
-        // Gắn chip lên đầu bubble
-        targetBox.getChildren().add(0, chip);
-
-        // Lưu lại replyTo để có thể re-attach nếu bubble bị thay thế sau này
         newMsgRow.getProperties().putIfAbsent("replyTo", replyToId);
     }
+
     
     // ===== Reply title helpers =====
+    private String getRowSender(HBox row) {
+        if (row == null) return null;
+        Object s = row.getProperties().get("sender");
+        return (s == null) ? null : String.valueOf(s);
+    }
+
+    /** Sinh snippet thống nhất cho bubble kiểu -file (dựa trên mime / tên file) */
+    private String buildFileReplySnippet(Region srcBubble, HBox srcRow) {
+        String display = "Tệp đính kèm";
+
+        // Ưu tiên lấy theo fid nếu có (đã map ở MidController)
+        Object fidObj = srcRow.getProperties().get("fid");
+        String fid = (fidObj != null) ? String.valueOf(fidObj) : null;
+
+        String fileName = null;
+        String mime     = null;
+
+        if (fid != null) {
+            fileName = controller.getFileIdToName().get(fid);
+            mime     = controller.getFileIdToMime().get(fid);
+        }
+
+        // Fallback: lấy từ label #fileNamePrimary trong bubble
+        if ((fileName == null || fileName.isBlank()) && srcBubble instanceof VBox vb) {
+            for (Node c : vb.lookupAll("#fileNamePrimary")) {
+                if (c instanceof Label l) {
+                    fileName = l.getText();
+                    break;
+                }
+            }
+        }
+
+        MediaKind kind = MediaKind.FILE;
+        if (mime != null || fileName != null) {
+            kind = UtilHandler.classifyMedia(mime, fileName);
+        }
+
+        switch (kind) {
+            case IMAGE -> display = "Ảnh";
+            case VIDEO -> display = "Video";
+            case AUDIO -> display = "Tin nhắn thoại";
+            case FILE -> {
+                if (fileName != null && !fileName.isBlank()) {
+                    display = fileName;         // pdf, zip, docx... giữ tên file
+                } else {
+                    display = "Tệp đính kèm";
+                }
+            }
+        }
+
+        if (display != null && display.length() > 140) {
+            display = display.substring(0, 140) + "…";
+        }
+        return display;
+    }
+
     // Tìm VBox bubble (hoặc wrapper) để gắn chip, hỗ trợ mọi loại bubble
     private VBox findBubbleBox(HBox row) {
         if (row == null || row.getChildren().isEmpty()) return null;
@@ -478,21 +582,40 @@ public class UIMessageHandler {
 
     /** Dựa trên alignment của 2 hàng để biết actor/source có phải viewer không */
     private String buildReplyTitleForRows(HBox srcRow, HBox newMsgRow) {
-        boolean actorIsViewer  = (newMsgRow.getAlignment() == Pos.CENTER_RIGHT); // outgoing từ viewer
-        boolean sourceIsViewer = (srcRow.getAlignment()    == Pos.CENTER_RIGHT); // tin nguồn do viewer gửi
-        return buildReplyTitle(actorIsViewer, sourceIsViewer);
+        String viewer = (controller.getCurrentUser() != null)
+                ? controller.getCurrentUser().getUsername()
+                : null;
+
+        String actorName  = getRowSender(newMsgRow);
+        String sourceName = getRowSender(srcRow);
+
+        boolean actorIsViewer  = (viewer != null && viewer.equals(actorName));
+        boolean sourceIsViewer = (viewer != null && viewer.equals(sourceName));
+
+        String actorPhrase = actorIsViewer
+                ? "Bạn"
+                : (actorName != null && !actorName.isBlank() ? actorName : "Người dùng");
+
+        String sourcePhrase;
+        if (actorIsViewer && sourceIsViewer) {
+            sourcePhrase = "tin nhắn chính mình";
+        } else if (sourceIsViewer) {
+            sourcePhrase = "tin nhắn của bạn";
+        } else if (sourceName != null && !sourceName.isBlank()) {
+            sourcePhrase = sourceName;
+        } else {
+            sourcePhrase = "người khác";
+        }
+
+        return actorPhrase + " đã trả lời " + sourcePhrase;
     }
 
     public void reattachReplyChipIfAny(HBox row) {
         if (row == null) return;
         Object rt = row.getProperties().get("replyTo");
         if (rt == null) return;
-        // gắn lại nếu bubble vừa bị replace
-        VBox target = findBubbleBox(row);
-        if (target == null) return;
-        if (!hasReplyChip(target)) {
-            attachReplyChipById(row, row.getAlignment()==Pos.CENTER_LEFT, String.valueOf(rt));
-        }
+        if (hasReplyChipOnRow(row)) return;
+        attachReplyChipById(row, row.getAlignment()==Pos.CENTER_LEFT, String.valueOf(rt));
     }
 
     /**/
@@ -566,6 +689,9 @@ public class UIMessageHandler {
         attachSideMenu(row, spacer, incoming, messageId);
 
         controller.getMessageContainer().getChildren().add(row);
+        if (sender != null && !sender.isBlank()) {
+            row.getProperties().put("sender", sender);
+        }
         scrollToBottom();
         // Logic reply link (giữ nguyên)
         Object ud = row.getUserData();
@@ -652,10 +778,8 @@ public class UIMessageHandler {
         HBox row = addRowWithBubble(bubble, incoming, messageId, sender, createdAt, updatedAt);
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
-            if (chip != null) { 
-                // Cần tìm VBox Bubble cũ để chèn chip, không phải VBox Message Content
-                VBox bubbleBox = findBubbleBox(row);
-                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
+            if (chip != null) {
+                attachReplyChipToRow(row, chip);
             }
             controller.clearReplyPreview();
         }
@@ -677,8 +801,7 @@ public class UIMessageHandler {
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
             if (chip != null) {
-                VBox bubbleBox = findBubbleBox(row);
-                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
+                attachReplyChipToRow(row, chip);
             }
             controller.clearReplyPreview();
         }
@@ -751,7 +874,9 @@ public class UIMessageHandler {
         }
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
-            if (chip != null) box.getChildren().add(0, chip);
+            if (chip != null) {
+                attachReplyChipToRow(row, chip);
+            }
             controller.clearReplyPreview();
         }
         return row;
@@ -801,9 +926,7 @@ public class UIMessageHandler {
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
             if (chip != null) {
-                // tìm bubble box để gắn chip (voice ban đầu là HBox nên findBubbleBox sẽ tự bọc VBox)
-                VBox bubbleBox = findBubbleBox(row);
-                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
+                attachReplyChipToRow(row, chip);
             }
             controller.clearReplyPreview();
         }
@@ -861,8 +984,7 @@ public class UIMessageHandler {
         if (controller.hasReplyContext()) {
             VBox chip = buildReplyChipForCurrentContext(row, incoming);
             if (chip != null) {
-                VBox bubbleBox = findBubbleBox(row);
-                if (bubbleBox != null) bubbleBox.getChildren().add(0, chip);
+                attachReplyChipToRow(row, chip);
             }
             controller.clearReplyPreview();
         }
@@ -882,24 +1004,14 @@ public class UIMessageHandler {
         }
     }
 
-    private Label findTextLabelInRow(HBox row, boolean incoming) {
-        Node bubble = null;
-        if (incoming) {
-            if (!row.getChildren().isEmpty()) bubble = row.getChildren().get(0);
-        } else {
-            if (!row.getChildren().isEmpty()) bubble = row.getChildren().get(row.getChildren().size() - 1);
-        }
+    private Label findTextLabelInRow(HBox row) {
+        Region bubble = findBubbleRegion(row);
         if (!(bubble instanceof VBox vb)) return null;
+
         for (Node n : vb.getChildren()) {
-        	 // bỏ qua reply-chip
+            // bỏ qua reply-chip nếu nó nằm trong bubble
             if (n instanceof VBox sub && sub.getStyleClass().contains("reply-chip")) continue;
             if (n instanceof Label lbl) return lbl;
-            // nếu nested VBox, tìm tiếp một lớp (bubble text thường đơn giản, nhưng để chắc ăn)
-            if (n instanceof VBox nested) {
-                for (Node m : nested.getChildren()) {
-                    if (m instanceof Label lbl2) return lbl2;
-                }
-            }
         }
         return null;
     }
@@ -938,33 +1050,26 @@ public class UIMessageHandler {
         return addRowWithBubble(box, incoming, (String) null, sender, createdAt, updatedAt);
     }
     private VBox buildReplyChipForCurrentContext(HBox newMsgRow, boolean newMsgIncoming) {
-        // lấy nguồn đang được reply
         HBox srcRow = controller.getReplyingRow();
         if (srcRow == null) return null;
 
         boolean srcIncoming = controller.isReplyingIncoming();
 
-        // Lấy bubble nguồn để trích nội dung/loại
-        Node srcBubble = srcIncoming ? srcRow.getChildren().get(0)
-                                     : srcRow.getChildren().get(srcRow.getChildren().size()-1);
+        Region srcBubble = findBubbleRegion(srcRow);
         String srcId = (srcBubble instanceof Region r) ? r.getId() : null;
-        boolean actorIsViewer  = !newMsgIncoming; // tin mới: incoming=false -> viewer là actor
-        boolean sourceIsViewer = !srcIncoming; // nguồn: incoming=false -> viewer là source
-        // Tạo title & snippet
-        String title = buildReplyTitle(actorIsViewer, sourceIsViewer);
-        String snippet = "Tin nhắn";
+
+        String title = buildReplyTitleForRows(srcRow, newMsgRow);
+
+        String snippet;
         if (srcId != null && srcId.endsWith("-text")) {
+            snippet = "Tin nhắn";
             if (srcBubble instanceof VBox vb) {
                 for (Node n : vb.getChildren()) if (n instanceof Label l) { snippet = l.getText(); break; }
             }
         } else if (srcId != null && srcId.endsWith("-image")) {
             snippet = "Ảnh";
         } else if (srcId != null && srcId.endsWith("-file")) {
-            String name = null;
-            if (srcBubble instanceof VBox vb) {
-                for (Node c : vb.lookupAll("#fileNamePrimary")) if (c instanceof Label l) { name = l.getText(); break; }
-            }
-            snippet = (name != null && !name.isBlank()) ? name : "Tệp đính kèm";
+            snippet = buildFileReplySnippet(srcBubble, srcRow);
         } else if (srcId != null && srcId.endsWith("-video")) {
             snippet = "Video";
         } else if (srcId != null && srcId.endsWith("-voice")) {
@@ -975,7 +1080,6 @@ public class UIMessageHandler {
 
         if (snippet != null && snippet.length() > 140) snippet = snippet.substring(0, 140) + "…";
 
-        // dựng chip
         VBox chip = new VBox(2);
         chip.getStyleClass().add("reply-chip");
 
@@ -988,13 +1092,12 @@ public class UIMessageHandler {
 
         chip.getChildren().addAll(lbTitle, lbText);
 
-        // click để scroll đến nguồn
         chip.setOnMouseClicked(ev -> controller.scrollToRow(srcRow));
 
-        // trỏ liên kết để dùng về sau (nếu cần)
         Object srcMsgId = srcRow.getUserData();
         if (srcMsgId != null) newMsgRow.getProperties().put("replyTo", String.valueOf(srcMsgId));
 
         return chip;
     }
+
 }

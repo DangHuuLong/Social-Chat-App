@@ -189,6 +189,35 @@ public class MidController implements CallSignalListener {
         }
         // KHÔNG gọi startListener ở đây nữa
     }
+    
+    private Region findBubbleRegionInRow(HBox row) {
+        if (row == null) return null;
+        return findBubbleRegionRecursive(row);
+    }
+
+    private Region findBubbleRegionRecursive(Node node) {
+        if (node instanceof Region r) {
+            String id = r.getId();
+            if (id != null && (
+                    id.endsWith("-text")  ||
+                    id.endsWith("-image") ||
+                    id.endsWith("-file")  ||
+                    id.endsWith("-video") ||
+                    id.endsWith("-voice") ||
+                    id.endsWith("-call")
+            )) {
+                return r;
+            }
+        }
+        if (node instanceof Pane p) {
+            for (Node c : p.getChildren()) {
+                Region found = findBubbleRegionRecursive(c);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
 
     public void showReplyPreview(HBox row, boolean incoming) {
         if (replyBar == null) return;
@@ -198,9 +227,8 @@ public class MidController implements CallSignalListener {
         replyTitle.setText("Trả lời");
         String preview = "Tin nhắn";
 
-        Node bubble = incoming ? row.getChildren().get(0)
-                               : row.getChildren().get(row.getChildren().size()-1);
-        String bid = (bubble instanceof Region r) ? r.getId() : null;
+        Region bubble = findBubbleRegionInRow(row);
+        String bid = (bubble != null) ? bubble.getId() : null;
 
         if (bid != null && bid.endsWith("-text")) {
             if (bubble instanceof VBox vb) {
@@ -251,6 +279,7 @@ public class MidController implements CallSignalListener {
         this.replyingRow = row;
         this.replyingIncoming = incoming;
     }
+
 
     public void clearReplyPreview() {
         if (replyBar == null) return;
