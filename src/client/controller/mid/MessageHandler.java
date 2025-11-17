@@ -122,16 +122,13 @@ public class MessageHandler {
         }
     }
 
- // Trong file client.controller.mid.MessageHandler.java
-
- // Trong file client.controller.mid.MessageHandler.java
-
     private void handleHistoryFrame(Frame f, String openPeer) {
         String jsonBody = f.body == null ? "" : f.body.trim();
 
         // 🌟 BƯỚC 1: XÁC ĐỊNH NỘI DUNG VÀ THỜI GIAN
         String sender;
         String content;
+        String recipient;
         long createdAt;
         long updatedAt;
         boolean isIncoming;
@@ -139,11 +136,13 @@ public class MessageHandler {
         // Thử parse JSON (Định dạng mới: Server gửi JSON có time/sender)
         String jsonSender = UtilHandler.jsonGet(jsonBody, "sender");
         String jsonContent = UtilHandler.jsonGet(jsonBody, "content");
+        String jsonRecipient = UtilHandler.jsonGet(jsonBody, "recipient");
         
         if (jsonSender != null && jsonContent != null) {
             // --- ĐỊNH DẠNG JSON MỚI ---
             sender = jsonSender;
             content = jsonContent;
+            recipient = jsonRecipient;
             createdAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "createdAt"), System.currentTimeMillis());
             updatedAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "updatedAt"), 0L);
             
@@ -156,6 +155,7 @@ public class MessageHandler {
             String line = jsonBody;
             createdAt = System.currentTimeMillis(); // Mặc định nếu không có trong chuỗi
             updatedAt = 0L; // Mặc định
+            recipient = null; 
 
             if (line.startsWith("[HIST IN]")) {
                 String payload = line.substring(9).trim();
@@ -176,10 +176,15 @@ public class MessageHandler {
 
         // 🌟 BƯỚC 2: CHỈ RENDER NẾU ĐANG MỞ ĐÚNG PEER
         // DM: openPeer phải là sender (incoming) hoặc recipient (outgoing)
-        if (openPeer != null && (openPeer.equals(sender) || openPeer.equals(f.recipient))) { 
-            // ✅ GỌI HÀM XỬ LÝ NỘI DUNG CHUNG VỚI ĐỦ 6 THAM SỐ
-            handleHistoryContent(content, f.transferId, isIncoming, sender, createdAt, updatedAt);
+        if (openPeer != null) {
+            boolean match = false;
+            if (openPeer.equals(sender)) match = true;
+            if (!match && recipient != null && openPeer.equals(recipient)) match = true;
+
+            if (!match) return;
         }
+
+        handleHistoryContent(content, f.transferId, isIncoming, sender, createdAt, updatedAt);
     }
 
 	 private void handleHistoryContent(String body, Object transferId, boolean incoming, String sender, long createdAt, long updatedAt) {
@@ -1115,37 +1120,43 @@ public class MessageHandler {
     }
 
     private void handleGroupHistoryFrame(Frame f) {
-        String groupId = f.recipient;
         String jsonBody = (f.body == null) ? "" : f.body.trim();
 
         Platform.runLater(() -> {
-            String currentPeer = controller.getCurrentPeer();
-            if (currentPeer == null || !currentPeer.equals("group:" + groupId)) return;
             if (jsonBody.isEmpty()) return;
 
-            // 🌟 BƯỚC 1: PARSE JSON
-            String sender = UtilHandler.jsonGet(jsonBody, "sender");
-            String content = UtilHandler.jsonGet(jsonBody, "content");
-            long createdAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "createdAt"), System.currentTimeMillis());
-            long updatedAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "updatedAt"), 0L);
-            long msgId = UtilHandler.parseLongSafe(f.transferId, 0L);
+            // 1) Parse JSON
+            String recipientKey = UtilHandler.jsonGet(jsonBody, "recipient"); // "group:11"
+            String sender       = UtilHandler.jsonGet(jsonBody, "sender");
+            String content      = UtilHandler.jsonGet(jsonBody, "content");
 
+            if (recipientKey == null || !recipientKey.startsWith("group:")) {
+                System.err.println("[GHIST] invalid recipient in json: " + recipientKey);
+                return;
+            }
             if (content == null || sender == null) {
                 System.err.println("[GHIST] Failed to parse JSON: " + jsonBody);
                 return;
             }
 
-            String myName = (controller.getCurrentUser() != null) ? controller.getCurrentUser().getUsername() : "";
-            boolean incoming = !sender.equals(myName);
+            // 2) Chỉ render nếu đang mở đúng group
+            String currentPeer = controller.getCurrentPeer();   // ví dụ "group:11"
+            if (currentPeer == null || !currentPeer.equals(recipientKey)) {
+                return;
+            }
 
+            long createdAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "createdAt"), System.currentTimeMillis());
+            long updatedAt = UtilHandler.parseLongSafe(UtilHandler.jsonGet(jsonBody, "updatedAt"), 0L);
+            long msgId     = UtilHandler.parseLongSafe(f.transferId, 0L);
+
+            String myName = (controller.getCurrentUser() != null)
+                    ? controller.getCurrentUser().getUsername()
+                    : "";
+            boolean incoming = !sender.equals(myName);
             String msgIdStr = (msgId > 0) ? String.valueOf(msgId) : null;
-            
-            // 🌟 BƯỚC 2: CHUYỂN TIẾP CONTENT SẠCH (HOẶC CÓ REPLY/FILE PREFIX)
-            // Group History hiện tại chỉ cần truyền content (có thể kèm [REPLY:] hoặc [FILE])
-            
-            // **KHÔNG CẦN** logic phân tích `sender:` hay `[HIST IN]` ở đây nữa.
+
+            // 3) Dùng lại logic chung cho FILE / AUDIO / VIDEO / TEXT / REPLY / CALLLOG
             handleHistoryContent(content, msgIdStr, incoming, sender, createdAt, updatedAt);
         });
     }
-    
 }

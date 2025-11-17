@@ -221,27 +221,41 @@ public class ClientConnection {
             return null;
         }
 
+        System.out.println("[AUTH_LOGIN] resp.body = " + resp.body); // log debug
+
         String status = jsonGet(resp.body, "status");
         if (!"OK".equals(status)) {
             System.err.println("[AUTH_LOGIN] status != OK: " + resp.body);
             return null;
         }
 
-        String uname = jsonGet(resp.body, "username");
+        String uname     = jsonGet(resp.body, "username");
         String finalName = (uname != null && !uname.isBlank()) ? uname : username;
 
-        // 👇 LẤY ID TỪ JSON
         String idStr = jsonGet(resp.body, "id");
         int id = 0;
         if (idStr != null && !idStr.isBlank()) {
+            try { id = (int) Long.parseLong(idStr); } catch (NumberFormatException ignore) {}
+        }
+
+        // 👉 LẤY avatarBase64
+        String avatarB64 = jsonGet(resp.body, "avatarBase64");
+        byte[] avatarBytes = null;
+        if (avatarB64 != null && !avatarB64.isBlank()) {
             try {
-                id = (int) Long.parseLong(idStr);
-            } catch (NumberFormatException ignore) {}
+                avatarBytes = Base64.getDecoder().decode(avatarB64);
+                System.out.println("[AUTH_LOGIN] avatarBytes.length = " + avatarBytes.length);
+            } catch (IllegalArgumentException ex) {
+                System.err.println("[AUTH_LOGIN] decode avatarBase64 failed: " + ex.getMessage());
+            }
         }
 
         User u = new User();
-        u.setId(id);               // 👈 QUAN TRỌNG: set id vào User
+        u.setId(id);
         u.setUsername(finalName);
+        if (avatarBytes != null && avatarBytes.length > 0) {
+            u.setAvatar(avatarBytes);        // 👈 QUAN TRỌNG
+        }
         return u;
     }
 

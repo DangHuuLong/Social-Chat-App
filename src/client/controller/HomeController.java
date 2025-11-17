@@ -24,6 +24,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
+
+import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.control.ButtonType;
 
@@ -90,6 +92,7 @@ public class HomeController {
     private final RightController rightCtrl = new RightController();
 
     private User currentUser;
+    private Image selfAvatar;
     private ClientConnection connection;
     private CallSignalingService callSvc;
     private String currentPeerUsername = null;
@@ -117,6 +120,7 @@ public class HomeController {
         rightCtrl.bindOverlay(overlayLayer, overlayContent, overlayDim, btnOverlayClose, btnOverlayDownload);
         midCtrl.bind(currentChatName, currentChatStatus, messageContainer, messageField, midHeaderAvatar);
         midCtrl.bindReplyBar(replyBar, replyThumb, replyFileIcon, replyTitle, replyContent, replyCloseBtn);
+        midCtrl.setLeftController(leftCtrl);
         rightCtrl.setMidController(midCtrl);
         midCtrl.setRightController(rightCtrl);
 
@@ -223,6 +227,13 @@ public class HomeController {
 //        requestGroupListFromServer();
         updateInviteButtonLabel();
 //        leftCtrl.startPresencePolling();
+    }
+    
+    public void setSelfAvatar(Image img) {
+        this.selfAvatar = img;
+        if (midCtrl != null) {
+        	midCtrl.setSelfAvatar(img);
+        }
     }
 
     public void setConnection(ClientConnection conn) {

@@ -3,6 +3,7 @@ package server.dao;
 import common.GroupMessage;
 
 import java.sql.*;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -15,8 +16,8 @@ public class GroupMessageDao {
 
     public long saveMessage(int groupId, String sender, String body, Long replyTo) throws SQLException {
         String sql = """
-            INSERT INTO group_messages (group_id, sender, body, reply_to, created_at, updated_at) 
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO group_messages (group_id, sender, body, reply_to)
+            VALUES (?, ?, ?, ?)
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setInt(1, groupId);
@@ -24,7 +25,9 @@ public class GroupMessageDao {
             ps.setString(3, body);
             if (replyTo == null) ps.setNull(4, Types.BIGINT);
             else ps.setLong(4, replyTo);
+
             ps.executeUpdate();
+
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 if (rs.next()) return rs.getLong(1);
             }
@@ -41,20 +44,28 @@ public class GroupMessageDao {
             ORDER BY id ASC
             LIMIT ?
             """;
+
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, groupId);
             ps.setInt(2, limit);
+
             try (ResultSet rs = ps.executeQuery()) {
                 List<GroupMessage> list = new ArrayList<>();
                 while (rs.next()) {
+                    Timestamp c = rs.getTimestamp("created_at");
+                    Timestamp u = rs.getTimestamp("updated_at");
+
+                    Instant createdAt = (c != null) ? c.toInstant() : Instant.now();
+                    Instant updatedAt = (u != null) ? u.toInstant() : null;
+
                     list.add(new GroupMessage(
                             rs.getLong("id"),
                             rs.getInt("group_id"),
                             rs.getString("sender"),
                             rs.getString("body"),
                             (Long) rs.getObject("reply_to"),
-                            rs.getTimestamp("created_at"),
-                            rs.getTimestamp("updated_at") // THÊM
+                            createdAt,
+                            updatedAt
                     ));
                 }
                 return list;
@@ -62,11 +73,12 @@ public class GroupMessageDao {
         }
     }
 
+
     // EDIT: trả về group_id nếu sửa được
     public Integer updateByIdReturningGroup(long id, String editor, String newBody) throws SQLException {
         String sql = """
             UPDATE group_messages
-            SET body = ?
+            SET body = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND sender = ?
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {

@@ -1,6 +1,6 @@
 package common;
 
-import java.sql.Timestamp;
+import java.time.Instant;
 
 public class GroupMessage {
     private long id;
@@ -8,11 +8,11 @@ public class GroupMessage {
     private String sender;
     private String body;
     private Long replyTo;
-    private Timestamp createdAt;
-    private Timestamp updatedAt; 
+    private Instant  createdAt;
+    private Instant  updatedAt; 
 
     public GroupMessage(long id, int groupId, String sender, String body, 
-                        Long replyTo, Timestamp createdAt, Timestamp updatedAt) {
+                        Long replyTo, Instant  createdAt, Instant  updatedAt) {
         this.id = id;
         this.groupId = groupId;
         this.sender = sender;
@@ -28,6 +28,6 @@ public class GroupMessage {
     public String getSender() { return sender; }
     public String getBody() { return body; }
     public Long getReplyTo() { return replyTo; }
-    public Timestamp getCreatedAt() { return createdAt; }
-    public Timestamp getUpdatedAt() { return updatedAt; } 
+    public Instant  getCreatedAt() { return createdAt; }
+    public Instant  getUpdatedAt() { return updatedAt; } 
 }

@@ -60,18 +60,14 @@ public class LeftController {
     public User getUserByUsername(String username) {
         if (username == null || username.isBlank()) return null;
 
-        // Tối ưu: Nếu LeftController duy trì Map<Username, User> sẽ nhanh hơn
-        // Nhưng dựa trên cấu trúc hiện tại (Map<ID, User>), ta dùng stream/loop trên idToUser.values()
-        
-        // Vì list userCache có thể lớn, dùng stream/filter. 
-        // idToUser theo ID nên không nên dùng để tìm theo username.
-        for (User u : userCache) {
-            if (username.equals(u.getUsername())) {
+        // Ưu tiên map idToUser (ổn định hơn userCache)
+        for (User u : idToUser.values()) {
+            if (u != null && username.equals(u.getUsername())) {
                 return u;
             }
         }
-        
-        // Kiểm tra nốt người dùng hiện tại (nếu MidController không check)
+
+        // Dự phòng: chính mình
         if (currentUser != null && username.equals(currentUser.getUsername())) {
             return currentUser;
         }
@@ -202,7 +198,11 @@ public class LeftController {
             u.setAvatar(avatarBytes);  // ✅ để createChatItem dùng được
         }
         idToUser.put(id, u);
-
+        if (currentUser != null && currentUser.getId() == u.getId()) {
+            currentUser.setOnline(u.isOnline());
+            currentUser.setLastSeenIso(u.getLastSeenIso());
+            currentUser.setAvatar(u.getAvatar());
+        }
         final int uidFinal = id;
         final boolean onlineFinal = online;
         final String lastSeenFinal = lastSeenIso;

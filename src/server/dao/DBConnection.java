@@ -7,7 +7,7 @@ public class DBConnection {
 		    "jdbc:mysql://localhost:3306/socialchatapp"
 		  + "?useSSL=false"
 		  + "&allowPublicKeyRetrieval=true"
-		  + "&serverTimezone=UTC";
+		  + "&serverTimezone=Asia/Ho_Chi_Minh";
     private static final String USER = "root";
     private static final String PASS = "";
 

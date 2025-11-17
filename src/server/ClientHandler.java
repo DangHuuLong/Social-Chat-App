@@ -228,6 +228,7 @@ public class ClientHandler implements Runnable {
     }
 
     /* ================= AUTH LOGIN (DB only) ================= */
+    /* ================= AUTH LOGIN (DB only) ================= */
     private void handleAuthLogin(Frame f) {
         try {
             String body = (f.body == null) ? "" : f.body;
@@ -252,23 +253,42 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // Lưu lại userId để cleanup set offline
             this.userId = user.getId();
 
-            // Đánh dấu online trong DB (thay vì client gọi)
+            // Đánh dấu online trong DB
             try {
                 UserDAO.setOnline(user.getId(), true);
             } catch (Exception ex) {
                 System.err.println("[AUTH_LOGIN] setOnline failed: " + ex.getMessage());
             }
 
-            // Trả JSON đơn giản cho client (chỉ cần username, id nếu sau này bạn muốn dùng thêm)
-            String json = "{"
-                    + "\"status\":\"OK\","
-                    + "\"id\":" + user.getId() + ","          // 👈 THÊM DÒNG NÀY
-                    + "\"username\":\"" + escJson(user.getUsername()) + "\""
-                    + "}";
+            // 👉 LẤY AVATAR TỪ DB
+            byte[] avatarBytes = null;
+            try {
+                avatarBytes = UserDAO.getAvatarById(user.getId());
+            } catch (Exception ex) {
+                System.err.println("[AUTH_LOGIN] getAvatarById failed: " + ex.getMessage());
+            }
 
+            String avatarB64 = null;
+            if (avatarBytes != null && avatarBytes.length > 0) {
+                avatarB64 = Base64.getEncoder().encodeToString(avatarBytes);
+            }
+
+            // 👉 TRẢ JSON CÓ KÈM avatarBase64
+            StringBuilder sb = new StringBuilder();
+            sb.append("{")
+              .append("\"status\":\"OK\",")
+              .append("\"id\":").append(user.getId()).append(",")
+              .append("\"username\":\"").append(escJson(user.getUsername())).append("\"");
+
+            if (avatarB64 != null) {
+                sb.append(",\"avatarBase64\":\"").append(avatarB64).append("\"");
+            }
+
+            sb.append("}");
+
+            String json = sb.toString();
             sendFrame(Frame.ack(json));
 
         } catch (SQLException e) {
@@ -1400,8 +1420,8 @@ public class ClientHandler implements Runnable {
                         + "\"content\":\"" + escJson(bodyWithReply) + "\","
                         + "\"sender\":\"" + escJson(m.getSender()) + "\","
                         + "\"recipient\":\"group:" + groupId + "\","
-                        + "\"createdAt\":" + m.getCreatedAt().getTime()+ "," // M.getCreatedAt() là Instant
-                        + "\"updatedAt\":" + (m.getUpdatedAt() != null ? m.getUpdatedAt().getTime() : 0L) // M.getUpdatedAt() là Instant
+                        + "\"createdAt\":" + m.getCreatedAt().toEpochMilli()+ "," // M.getCreatedAt() là Instant
+                        + "\"updatedAt\":" + (m.getUpdatedAt() != null ? m.getUpdatedAt().toEpochMilli() : 0L) // M.getUpdatedAt() là Instant
                         + "}";
 
                     Frame hist = new Frame(

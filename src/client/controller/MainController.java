@@ -24,8 +24,9 @@ import javafx.stage.Stage;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.Objects;
 import java.util.Optional;
-
+import java.io.ByteArrayInputStream;
 public class MainController {
 
     @FXML private Button loginBtn;
@@ -36,7 +37,7 @@ public class MainController {
 
     private enum AuthMode { LOGIN, REGISTER }
     
-    private static final String SERVER_HOST = "192.168.1.161"; // sau này đổi thành IP server
+    private static final String SERVER_HOST = "192.168.1.162"; // sau này đổi thành IP server
     private static final int    SERVER_PORT = 5000;
 
     private void showAuthDialog(AuthMode mode) {
@@ -308,6 +309,21 @@ public class MainController {
             home.setConnection(conn);
             home.setCurrentUser(loggedInUser);
             home.setCallService(callSvc);
+            
+            byte[] avatarBytes = loggedInUser.getAvatar();
+            Image selfAvatar;
+            if (avatarBytes != null && avatarBytes.length > 0) {
+                selfAvatar = new Image(new ByteArrayInputStream(avatarBytes));
+            } else {
+                selfAvatar = new Image(
+                    Objects.requireNonNull(
+                        getClass().getResource("/client/view/images/default user.png")
+                    ).toExternalForm()
+                );
+            }
+            home.setSelfAvatar(selfAvatar);
+
+            
             Scene scene = new Scene(root);
             scene.getStylesheets().add(getClass().getResource("/client/view/chat.css").toExternalForm());
             stage.setScene(scene);

@@ -10,6 +10,7 @@ import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
+import javafx.scene.shape.Circle;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.util.Duration;
@@ -620,10 +621,20 @@ public class UIMessageHandler {
 
     // Helper để lấy Avatar (sẽ cần MidController hỗ trợ cache)
     private ImageView getAvatarView(String sender) {
-        Image avatar = controller.loadAvatarImageForUser(sender); // GIẢ ĐỊNH: MidController có hàm này
+        Image avatar = controller.loadAvatarImageForUser(sender); // lấy avatar theo username
         ImageView iv = new ImageView(avatar);
-        iv.setFitWidth(24);
-        iv.setFitHeight(24);
+        iv.setFitWidth(28);
+        iv.setFitHeight(28);
+        iv.setPreserveRatio(true);
+        iv.setSmooth(true);
+
+        // Clip hình tròn
+        Circle clip = new Circle();
+        clip.radiusProperty().bind(iv.fitWidthProperty().divide(2));
+        clip.centerXProperty().bind(iv.fitWidthProperty().divide(2));
+        clip.centerYProperty().bind(iv.fitHeightProperty().divide(2));
+        iv.setClip(clip);
+
         iv.getStyleClass().add("message-avatar");
         return iv;
     }

@@ -34,7 +34,7 @@ import java.io.File;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
-
+import java.io.ByteArrayInputStream;
 public class MidController implements CallSignalListener {
 	public static final class MsgView {
 	    private final long epochMillis;
@@ -50,6 +50,15 @@ public class MidController implements CallSignalListener {
 	public List<MsgView> exportMessagesForSearch() {
 	    return new ArrayList<>(this.messageSnapshot);
 	}
+	public MidController() {
+        Image tmp;
+        try {
+            tmp = new Image(getClass().getResourceAsStream("/client/view/images/default user.png"));
+        } catch (Exception e) {
+            tmp = new Image("https://via.placeholder.com/84");
+        }
+        defaultAvatar = tmp;
+    }
     private Label currentChatName;
     private Label currentChatStatus;
     private VBox messageContainer;
@@ -125,6 +134,14 @@ public class MidController implements CallSignalListener {
 	public void setLeftController(LeftController lc) {
         this.leftController = lc;
     }
+	private Image selfAvatar;
+	private final Image defaultAvatar;
+	public void setSelfAvatar(Image img) {
+        this.selfAvatar = img;
+        if (currentUser != null && currentUser.getUsername() != null && img != null) {
+            avatarCache.put(currentUser.getUsername(), img);
+        }
+    }
     public void bind(Label currentChatName, Label currentChatStatus, VBox messageContainer, TextField messageField, ImageView midHeaderAvatar) {
         this.currentChatName = currentChatName;
         this.currentChatStatus = currentChatStatus;
@@ -149,7 +166,21 @@ public class MidController implements CallSignalListener {
 		}
 	}
     public void setRightController(RightController rc) { this.rightController = rc; }
-    public void setCurrentUser(User user) { this.currentUser = user; }
+    public void setCurrentUser(User user) {
+        this.currentUser = user;
+
+        if (user != null && user.getUsername() != null) {
+            byte[] bytes = user.getAvatar();
+            if (bytes != null && bytes.length > 0) {
+                try {
+                    Image img = new Image(new ByteArrayInputStream(bytes));
+                    this.selfAvatar = img;
+                    avatarCache.put(user.getUsername(), img);
+                } catch (Exception ignore) {}
+            }
+        }
+    }
+
     public CallHandler getCallHandler() { return callHandler; }
     public void setConnection(ClientConnection conn) {
         this.connection = conn;
@@ -313,7 +344,9 @@ public class MidController implements CallSignalListener {
         if (rightController != null) {
             rightController.setAvatar(peerAvatar);
         }
-
+        if (u.getUsername() != null && peerAvatar != null) {
+            avatarCache.put(u.getUsername(), peerAvatar);
+        }
         if (messageContainer != null) {
             if (messageContainer.getChildren().size() > 100) {
                 messageContainer.getChildren().remove(0, messageContainer.getChildren().size() - 100);
@@ -396,24 +429,52 @@ public class MidController implements CallSignalListener {
         }
     }
     public Image loadAvatarImageForUser(String username) {
-        if (username == null || username.isBlank()) {
-            return loadDefaultAvatar();
-        }
-        
-        // 1. Kiểm tra cache
-        if (avatarCache.containsKey(username)) {
-            return avatarCache.get(username);
-        }
-        
-        // 2. Tải/tìm User 
-        User u = findUserByUsername(username); 
+        if (username == null || username.isBlank()) return defaultAvatar;
 
-        Image img = loadAvatarImage(u); // Dùng hàm load avatar cũ (dựa trên User object)
-        
-        // 3. Cache và trả về
-        avatarCache.put(username, img);
-        return img;
+        // 1. Nếu là chính mình
+        if (currentUser != null && username.equals(currentUser.getUsername())) {
+            if (selfAvatar != null) return selfAvatar;
+
+            byte[] bytes = currentUser.getAvatar();
+            if (bytes != null && bytes.length > 0) {
+                try {
+                    Image img = new Image(new ByteArrayInputStream(bytes));
+                    selfAvatar = img;
+                    avatarCache.put(username, img);
+                    return img;
+                } catch (Exception ignore) {}
+            }
+            return defaultAvatar;
+        }
+
+        // 2. Thử cache theo username
+        Image cached = avatarCache.get(username);
+        if (cached != null) {
+            System.out.println("[AVATAR] cache hit for " + username);
+            return cached;
+        }
+
+        // 3. Hỏi LeftController xem có User + avatar bytes không
+        if (leftController != null) {
+            User u = leftController.getUserByUsername(username);
+            if (u != null) {
+                byte[] bytes = u.getAvatar();
+                if (bytes != null && bytes.length > 0) {
+                    try {
+                        Image img = new Image(new ByteArrayInputStream(bytes));
+                        avatarCache.put(username, img);
+                        System.out.println("[AVATAR] loaded from LeftController for " + username);
+                        return img;
+                    } catch (Exception ignore) { }
+                }
+            }
+        }
+
+        System.out.println("[AVATAR] default for " + username);
+        return defaultAvatar;
     }
+
+
     private User findUserByUsername(String username) {
         if (username == null || username.isBlank()) return null;
 
