@@ -1052,7 +1052,7 @@ public class UIMessageHandler {
     private VBox buildReplyChipForCurrentContext(HBox newMsgRow, boolean newMsgIncoming) {
         HBox srcRow = controller.getReplyingRow();
         if (srcRow == null) return null;
-
+        
         boolean srcIncoming = controller.isReplyingIncoming();
 
         Region srcBubble = findBubbleRegion(srcRow);

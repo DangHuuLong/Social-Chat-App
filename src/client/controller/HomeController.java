@@ -226,7 +226,7 @@ public class HomeController {
         leftCtrl.reloadAll();
 //        requestGroupListFromServer();
         updateInviteButtonLabel();
-//        leftCtrl.startPresencePolling();
+        leftCtrl.startPresencePolling();
     }
     
     public void setSelfAvatar(Image img) {

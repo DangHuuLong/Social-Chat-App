@@ -309,8 +309,10 @@ public class LeftController {
 
     public void searchUsers(String keyword) {
         String k = (keyword == null) ? "" : keyword.trim();
+
         if (k.isEmpty()) {
-            reloadAll();
+            // ✅ Khi không nhập gì -> trả UI về trạng thái bình thường (có user + group)
+            renderAll(userCache, groupCache);
             return;
         }
 
@@ -321,8 +323,11 @@ public class LeftController {
                 filtered.add(u);
             }
         }
+
+        // ✅ Khi đang search -> chỉ hiện user match, ẩn group là chấp nhận được
         renderUsers(filtered);
     }
+
 
     private HBox createChatItem(User u) {
         HBox row = new HBox(10);
